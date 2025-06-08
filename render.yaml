@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: painel-emails
-    env: python
-    plan: free
-    buildCommand: "pip install -r requirements.txt; python -c 'import sqlite3; conn = sqlite3.connect(\"painel.db\"); conn.close()'"
-    startCommand: "gunicorn app:app"
