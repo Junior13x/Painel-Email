@@ -25,64 +25,62 @@ def get_db_connection():
     return conn
 
 def init_db():
-    """Cria todas as tabelas com a estrutura final e correta."""
     conn = get_db_connection()
     cursor = conn.cursor()
+    # Adiciona as colunas de configuração e plano à tabela de usuários, se não existirem.
+    user_columns = [
+        ('plan', "TEXT NOT NULL DEFAULT 'free'"), ('plan_start_date', "DATE"), ('plan_validity_days', "INTEGER"),
+        ('baserow_host', "TEXT"), ('baserow_api_key', "TEXT"), ('baserow_table_id', "TEXT"),
+        ('smtp_host', "TEXT"), ('smtp_port', "INTEGER"), ('smtp_user', "TEXT"), ('smtp_password', "TEXT"),
+        ('batch_size', "INTEGER"), ('delay_seconds', "INTEGER"), ('automations_config', "TEXT")
+    ]
     
-    # Tabela de Usuários com a estrutura final
+    # Verifica a existência da tabela users antes de tentar alterá-la
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users';")
+    table_exists = cursor.fetchone()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY, 
-            email TEXT NOT NULL UNIQUE, 
-            password_hash TEXT NOT NULL, 
-            role TEXT NOT NULL DEFAULT 'user',
+            id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user',
+            plan TEXT NOT NULL DEFAULT 'free', plan_start_date DATE, plan_validity_days INTEGER,
             baserow_host TEXT, baserow_api_key TEXT, baserow_table_id TEXT,
             smtp_host TEXT, smtp_port INTEGER, smtp_user TEXT, smtp_password TEXT,
-            batch_size INTEGER, delay_seconds INTEGER,
-            plan_id INTEGER REFERENCES plans(id), 
-            plan_expiration_date DATE,
-            last_send_date TEXT, 
-            sends_today INTEGER NOT NULL DEFAULT 0
+            batch_size INTEGER, delay_seconds INTEGER, automations_config TEXT
         )""")
-
-    # Tabela de Planos com a estrutura final
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS plans (
-            id INTEGER PRIMARY KEY, 
-            name TEXT NOT NULL UNIQUE, 
-            price REAL NOT NULL, 
-            validity_days INTEGER NOT NULL, 
-            daily_send_limit INTEGER NOT NULL DEFAULT 0,
-            is_active BOOLEAN NOT NULL DEFAULT 1
-        )""")
-
-    # Tabela de Recursos (Features)
-    cursor.execute("CREATE TABLE IF NOT EXISTS features (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL)")
-
-    # Tabela de Ligação Planos <-> Recursos
-    cursor.execute("CREATE TABLE IF NOT EXISTS plan_features (plan_id INTEGER NOT NULL, feature_id INTEGER NOT NULL, FOREIGN KEY (plan_id) REFERENCES plans (id) ON DELETE CASCADE, FOREIGN KEY (feature_id) REFERENCES features (id) ON DELETE CASCADE, PRIMARY KEY (plan_id, feature_id))")
     
-    # Outras tabelas do sistema
+    # Adiciona colunas apenas se a tabela já existia (para migrações)
+    if table_exists:
+        for col_name, col_type in user_columns:
+            try:
+                cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type};")
+            except sqlite3.OperationalError: pass
+
+    # --- LÓGICA PARA CRIAR ADMIN PADRÃO ---
+    cursor.execute("SELECT COUNT(id) FROM users WHERE role = 'admin'")
+    admin_count = cursor.fetchone()[0]
+    if admin_count == 0:
+        print("Nenhum administrador encontrado. Criando usuário admin padrão...")
+        default_email = 'admin@painel.com'
+        default_pass = 'admin123'
+        password_hash = generate_password_hash(default_pass)
+        cursor.execute(
+            "INSERT INTO users (email, password_hash, role, plan) VALUES (?, ?, 'admin', 'vip')",
+            (default_email, password_hash)
+        )
+        print(f"Usuário admin criado: {default_email} / Senha: {default_pass}")
+    
+    try: cursor.execute("ALTER TABLE envio_historico ADD COLUMN body TEXT;")
+    except sqlite3.OperationalError: pass
+    try: cursor.execute("ALTER TABLE scheduled_emails ADD COLUMN user_id INTEGER;")
+    except sqlite3.OperationalError: pass
+    try: cursor.execute("ALTER TABLE email_templates ADD COLUMN user_id INTEGER;")
+    except sqlite3.OperationalError: pass
+        
     cursor.execute("CREATE TABLE IF NOT EXISTS envio_historico (id INTEGER PRIMARY KEY, user_id INTEGER, recipient_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT, sent_at TEXT NOT NULL)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS scheduled_emails (id INTEGER PRIMARY KEY, user_id INTEGER, schedule_type TEXT NOT NULL, status_target TEXT, manual_recipients TEXT, subject TEXT NOT NULL, body TEXT NOT NULL, send_at DATETIME NOT NULL, is_sent BOOLEAN DEFAULT FALSE)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS scheduled_emails (id INTEGER PRIMARY KEY, user_id INTEGER, schedule_type TEXT NOT NULL, status_target TEXT, manual_recipients TEXT, subject TEXT NOT NULL, body TEXT NOT NULL, send_at DATETIME NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, is_sent BOOLEAN DEFAULT FALSE)")
     cursor.execute("CREATE TABLE IF NOT EXISTS email_templates (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(user_id, name))")
-    
     conn.commit()
     conn.close()
-    print("Banco de dados verificado/criado com a estrutura final.")
-
-def populate_features():
-    """Garante que a lista mestra de recursos exista no banco."""
-    master_features = [
-        {'slug': 'schedules', 'name': 'Agendamentos de Campanhas'},
-        {'slug': 'automations', 'name': 'Automações Inteligentes'}
-    ]
-    conn = get_db_connection()
-    for feature in master_features:
-        conn.execute("INSERT OR IGNORE INTO features (slug, name) VALUES (?, ?)",(feature['slug'], feature['name']))
-    conn.commit()
-    conn.close()
-    print("Tabela de 'features' populada/verificada.")
 
 # ===============================================================
 # == FUNÇÕES DE LÓGICA (HELPERS) ==
