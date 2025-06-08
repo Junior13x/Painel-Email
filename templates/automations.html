@@ -1,0 +1,122 @@
+<!-- Diz ao sistema para usar o 'base.html' como esqueleto -->
+{% extends "base.html" %}
+
+<!-- Define o título específico para esta página -->
+{% block title %}Painel Principal{% endblock %}
+
+<!-- Coloca todo o conteúdo desta página dentro do bloco 'content' do base.html -->
+{% block content %}
+<!doctype html>
+<html lang="pt-br">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Automações</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-4 mb-5">
+        <div class="d-flex justify-content-between align-items-center">
+            <h1>Automações</h1>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
+        </div>
+        <p>Configure regras para enviar e-mails automaticamente com base em eventos específicos.</p>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert alert-{{ category }} mt-3">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <hr>
+
+        <form method="POST">
+            <!-- Automação 1: Boas-vindas -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>📧 E-mail de Boas-vindas para Novos Clientes</h5>
+                </div>
+                <div class="card-body">
+                    <p class="card-text">Envia um e-mail automaticamente sempre que um novo contato é adicionado à sua lista no Baserow.</p>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" id="welcome_enabled" name="welcome_enabled" {% if automations.get('welcome', {}).get('enabled') %}checked{% endif %}>
+                        <label class="form-check-label" for="welcome_enabled">Ativar automação de boas-vindas</label>
+                    </div>
+                    <div class="mb-3">
+                        <label for="welcome_subject" class="form-label">Assunto do E-mail de Boas-vindas</label>
+                        <input type="text" class="form-control" id="welcome_subject" name="welcome_subject" value="{{ automations.get('welcome', {}).get('subject', '') }}">
+                    </div>
+                    <div>
+                        <label for="welcome_body" class="form-label">Corpo do E-mail de Boas-vindas (HTML)</label>
+                        <textarea id="welcome_body" name="welcome_body" class="form-control tinymce-editor" rows="8">{{ automations.get('welcome', {}).get('body', '') }}</textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Automação 2: Avisos de Expiração -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>⚠️ Avisos de Expiração de Plano</h5>
+                </div>
+                <div class="card-body">
+                    <p class="card-text">Envia e-mails de aviso para clientes cujos planos estão prestes a expirar.</p>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" id="expiry_enabled" name="expiry_enabled" {% if automations.get('expiry', {}).get('enabled') %}checked{% endif %}>
+                        <label class="form-check-label" for="expiry_enabled">Ativar automação de expiração</label>
+                    </div>
+                    
+                    <h6>Modelos de E-mail:</h6>
+                    <div class="mb-3">
+                        <label for="expiry_7_days_subject" class="form-label">Assunto (Faltando 7 dias)</label>
+                        <input type="text" class="form-control" id="expiry_7_days_subject" name="expiry_7_days_subject" value="{{ automations.get('expiry', {}).get('subject_7_days', '') }}">
+                    </div>
+                    <div class="mb-3">
+                        <label for="expiry_7_days_body" class="form-label">Corpo (Faltando 7 dias)</label>
+                        <textarea id="expiry_7_days_body" name="expiry_7_days_body" class="form-control tinymce-editor" rows="8">{{ automations.get('expiry', {}).get('body_7_days', '') }}</textarea>
+                    </div>
+                    <hr>
+                    <div class="mb-3">
+                        <label for="expiry_3_days_subject" class="form-label">Assunto (Faltando 3 dias)</label>
+                        <input type="text" class="form-control" id="expiry_3_days_subject" name="expiry_3_days_subject" value="{{ automations.get('expiry', {}).get('subject_3_days', '') }}">
+                    </div>
+                    <div class="mb-3">
+                        <label for="expiry_3_days_body" class="form-label">Corpo (Faltando 3 dias)</label>
+                        <textarea id="expiry_3_days_body" name="expiry_3_days_body" class="form-control tinymce-editor" rows="8">{{ automations.get('expiry', {}).get('body_3_days', '') }}</textarea>
+                    </div>
+                    <hr>
+                     <div class="mb-3">
+                        <label for="expiry_1_day_subject" class="form-label">Assunto (Faltando 1 dia)</label>
+                        <input type="text" class="form-control" id="expiry_1_day_subject" name="expiry_1_day_subject" value="{{ automations.get('expiry', {}).get('subject_1_day', '') }}">
+                    </div>
+                    <div>
+                        <label for="expiry_1_day_body" class="form-label">Corpo (Faltando 1 dia)</label>
+                        <textarea id="expiry_1_day_body" name="expiry_1_day_body" class="form-control tinymce-editor" rows="8">{{ automations.get('expiry', {}).get('body_1_day', '') }}</textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-grid">
+                <button type="submit" class="btn btn-success btn-lg">Salvar Configurações de Automação</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Scripts JS -->
+    <script src="https://cdn.tiny.cloud/1/w2y1qgbsot0rzi900osw5ffpc0rseh89dt7a6s7ta66u3v54/tinymce/7/tinymce.min.js" referrerpolicy="origin"></script>
+    <script>
+        tinymce.init({
+          selector: '.tinymce-editor', // Aplica a todas as textareas com esta classe
+          plugins: 'lists link image table code help wordcount',
+          toolbar: 'undo redo | blocks | bold italic | alignleft aligncenter alignright | indent outdent | bullist numlist | code | help'
+        });
+
+        // Garante que o conteúdo de todos os editores é salvo antes de submeter
+        document.querySelector('form').addEventListener('submit', function() {
+            tinymce.triggerSave();
+        });
+    </script>
+</body>
+</html>
+{% endblock %}

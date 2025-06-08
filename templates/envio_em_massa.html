@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+
+{% block title %}Envio em Massa{% endblock %}
+
+{% block head_scripts %}
+    <!-- Script do TinyMCE - Lembre-se de usar sua chave de API -->
+    <script src="https://cdn.tiny.cloud/1/w2y1qgbsot0rzi900osw5ffpc0rseh89dt7a6s7ta66u3v54/tinymce/7/tinymce.min.js" referrerpolicy="origin"></script>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center">
+    <h1>Envio em Massa</h1>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
+</div>
+<p>Selecione contactos da sua lista do Baserow e envie um e-mail em HTML para eles.</p>
+
+<!-- NOVO CONTADOR DE LIMITE DIÁRIO -->
+<div class="alert alert-info">
+    {% if daily_limit == -1 %}
+        <strong>Plano Ilimitado:</strong> Você pode enviar quantos e-mails desejar.
+    {% else %}
+        <strong>Limite Diário:</strong> Você pode enviar mais <strong>{{ sends_remaining }}</strong> de <strong>{{ daily_limit }}</strong> e-mails hoje.
+    {% endif %}
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+        <div class="alert alert-{{ category }} mt-3">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+{% if error %}
+    <div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<hr>
+
+<!-- Seção de Filtros -->
+<div class="card bg-light mb-4">
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('mass_send_page') }}" class="row g-3 align-items-center">
+            <div class="col-md-4">
+                <label for="sort_by" class="form-label">Ordenar por:</label>
+                <select name="sort_by" id="sort_by" class="form-select">
+                    <option value="" {% if not current_sort %}selected{% endif %}>Padrão</option>
+                    <option value="Nome" {% if current_sort == 'Nome' %}selected{% endif %}>Nome (A-Z)</option>
+                    <option value="-Nome" {% if current_sort == '-Nome' %}selected{% endif %}>Nome (Z-A)</option>
+                    <option value="dias_calculado" {% if current_sort == 'dias_calculado' %}selected{% endif %}>Dias Restantes (Crescente)</option>
+                    <option value="-dias_calculado" {% if current_sort == '-dias_calculado' %}selected{% endif %}>Dias Restantes (Decrescente)</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label for="status_filter" class="form-label">Filtrar por Status:</label>
+                <select name="status_filter" id="status_filter" class="form-select">
+                    <option value="all" {% if current_status_filter == 'all' %}selected{% endif %}>Todos</option>
+                    <option value="success" {% if current_status_filter == 'success' %}selected{% endif %}>Vip / Em Dia</option>
+                    <option value="warning" {% if current_status_filter == 'warning' %}selected{% endif %}>Expirando</option>
+                    <option value="danger" {% if current_status_filter == 'danger' %}selected{% endif %}>Expirado / Free</option>
+                </select>
+            </div>
+            <div class="col-md-auto align-self-end">
+                <button type="submit" class="btn btn-secondary">Aplicar Filtros</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<form method="POST" action="{{ url_for('mass_send_page', page=current_page, sort_by=current_sort, status_filter=current_status_filter) }}" id="email-form">
+    <input type="hidden" name="bulk_action" id="bulk-action-input" value="manual">
+
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead>
+                <tr>
+                    <th scope="col" style="width: 5%;"><input class="form-check-input" type="checkbox" id="selectAll"></th>
+                    <th scope="col">Nome</th>
+                    <th scope="col">Email</th>
+                    <th scope="col">Dias Restantes</th>
+                    <th scope="col">Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for contact in contacts %}
+                <tr>
+                    <td><input class="form-check-input contact-checkbox" type="checkbox" name="selected_contacts" value="{{ contact.id }}"></td>
+                    <td>{{ contact.Nome or 'N/A' }}</td>
+                    <td>{{ contact.Email or 'N/A' }}</td>
+                    <td>{{ contact.dias_restantes_calculado or 'N/A' }}</td>
+                    <td><span class="badge text-bg-{{ contact.status_badge_class }}">{{ contact.status_text }}</span></td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5" class="text-center text-muted">Nenhum contacto encontrado ou correspondente ao filtro.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Navegação de Paginação -->
+    <nav aria-label="Navegação da lista de contatos">
+        <ul class="pagination justify-content-center">
+            <li class="page-item {% if not prev_page_num %}disabled{% endif %}">
+                <a class="page-link" href="{{ url_for('mass_send_page', page=prev_page_num, sort_by=current_sort, status_filter=current_status_filter) }}">Anterior</a>
+            </li>
+            <li class="page-item active" aria-current="page">
+                <span class="page-link">Página {{ current_page }}</span>
+            </li>
+            <li class="page-item {% if not next_page_num %}disabled{% endif %}">
+                <a class="page-link" href="{{ url_for('mass_send_page', page=next_page_num, sort_by=current_sort, status_filter=current_status_filter) }}">Próxima</a>
+            </li>
+        </ul>
+    </nav>
+
+    <hr>
+
+    <div class="text-center mb-3">
+        <h5 class="fw-normal"><span id="selection-count" class="fw-bold">0</span> contacto(s) selecionado(s) nesta página.</h5>
+    </div>
+
+    <!-- SEÇÃO PARA CARREGAR MODELOS -->
+    <div class="card bg-light mb-4">
+        <div class="card-body">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-6">
+                    <label for="template-selector" class="form-label">Usar um Modelo</label>
+                    <select class="form-select" id="template-selector">
+                        <option value="" selected>Selecione um modelo para carregar...</option>
+                        {% for tpl in templates %}
+                        <option value="{{ tpl.id }}" data-subject="{{ tpl.subject }}" data-body="{{ tpl.body|e }}">{{ tpl.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-auto">
+                    <button type="button" id="load-template-btn" class="btn btn-outline-info">Carregar Modelo</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <h3 class="mt-4">Compor E-mail</h3>
+    <div class="mb-3">
+        <label for="subject" class="form-label">Assunto</label>
+        <input type="text" class="form-control" id="subject" name="subject" value="{{ prefill_subject or '' }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="body" class="form-label">Corpo do E-mail</label>
+        <textarea class="form-control" id="body" name="body" rows="15" required>{{ prefill_body or '' }}</textarea>
+    </div>
+
+    <!-- Botões de Ação -->
+    <div class="d-grid gap-2">
+        <button type="button" class="btn btn-primary" id="manual-submit-btn">
+            Enviar APENAS para os <span id="manual-selection-count">0</span> selecionados manualmente
+        </button>
+        <hr>
+        <p class="text-center text-muted mb-2">Ou use uma ação em massa:</p>
+        <button type="button" class="btn btn-dark bulk-action-btn" data-action="all" data-action-text="TODOS os contactos da sua lista">Enviar para TODOS os Contatos (Geral)</button>
+        <p class="text-center text-muted mt-3 mb-2">Ações por status específico:</p>
+        <button type="button" class="btn btn-outline-success bulk-action-btn" data-action="success" data-action-text="TODOS os contatos 'Vip / Em Dia'">Enviar para TODOS os 'Vip / Em Dia'</button>
+        <button type="button" class="btn btn-outline-warning bulk-action-btn" data-action="warning" data-action-text="TODOS os contatos 'Expirando'">Enviar para TODOS os 'Expirando'</button>
+        <button type="button" class="btn btn-outline-danger bulk-action-btn" data-action="danger" data-action-text="TODOS os contatos 'Expirado / Free'">Enviar para TODOS os 'Expirado / Free'</button>
+    </div>
+</form>
+{% endblock %}
+
+{% block tail_scripts %}
+<script>
+    tinymce.init({
+        selector: 'textarea#body',
+        plugins: 'lists link image table code help wordcount',
+        toolbar: 'undo redo | blocks | bold italic | alignleft aligncenter alignright | indent outdent | bullist numlist | code | help',
+        skin: (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'oxide-dark' : 'oxide',
+        content_css: (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'default',
+        height: 400
+    });
+
+    const loadingOverlay = document.getElementById('loading-overlay');
+
+    function submitForm(isBulk = false) {
+        tinymce.triggerSave();
+        if (document.getElementById('subject').value === '' || tinymce.get('body').getContent() === '') {
+            alert('Por favor, preencha o Assunto e o Corpo do e-mail antes de enviar.');
+            return false;
+        }
+        
+        if (isBulk) {
+            loadingOverlay.style.display = 'flex';
+        }
+        
+        document.getElementById('email-form').submit();
+        return true;
+    }
+
+    document.getElementById('manual-submit-btn').addEventListener('click', function () {
+        document.getElementById('bulk-action-input').value = 'manual';
+        if (document.querySelectorAll('.contact-checkbox:checked').length === 0) {
+            alert('Nenhum contato foi selecionado manualmente.');
+            return;
+        }
+        submitForm(true);
+    });
+
+    document.querySelectorAll('.bulk-action-btn').forEach(button => {
+        button.addEventListener('click', function () {
+            const action = this.getAttribute('data-action');
+            const actionText = this.getAttribute('data-action-text');
+            document.getElementById('bulk-action-input').value = action;
+
+            if (confirm(`Você tem certeza que deseja enviar este e-mail para ${actionText}? Esta ação pode levar vários minutos e não pode ser interrompida.`)) {
+                submitForm(true);
+            }
+        });
+    });
+
+    function updateSelectionCount() {
+        const count = document.querySelectorAll('.contact-checkbox:checked').length;
+        document.getElementById('selection-count').textContent = count;
+        document.getElementById('manual-selection-count').textContent = count;
+    }
+    document.getElementById('selectAll').addEventListener('click', function (event) {
+        document.querySelectorAll('.contact-checkbox').forEach(checkbox => {
+            checkbox.checked = event.target.checked;
+        });
+        updateSelectionCount();
+    });
+    document.querySelectorAll('.contact-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('click', updateSelectionCount);
+    });
+    document.addEventListener('DOMContentLoaded', updateSelectionCount);
+    
+    document.getElementById('load-template-btn').addEventListener('click', function () {
+        const selector = document.getElementById('template-selector');
+        const selectedOption = selector.options[selector.selectedIndex];
+        if (!selectedOption.value) {
+            alert('Por favor, selecione um modelo da lista.');
+            return;
+        }
+        const subject = selectedOption.getAttribute('data-subject');
+        const body = selectedOption.getAttribute('data-body');
+        document.getElementById('subject').value = subject;
+        if (tinymce.get('body')) {
+            tinymce.get('body').setContent(body);
+        }
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}Ajuda e Documentação{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center">
+    <h1>Guia Completo do Painel</h1>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
+</div>
+<p class="lead">Entenda como configurar e utilizar todas as ferramentas do seu painel de e-mails.</p>
+
+<hr class="my-4">
+
+<h2 class="mb-3">1. Configurações Iniciais</h2>
+<p>Antes de usar o painel, é essencial preencher corretamente a página de <strong><a href="{{ url_for('settings_page') }}">Configurações</a></strong>.</p>
+<ul>
+    <li><strong>Configurações do Baserow:</strong> Preencha o "Host", a "Chave de API (Token)" e o "ID da Tabela" da sua base de contatos. Isso permite que o painel leia sua lista de clientes. As colunas <strong>"Nome"</strong>, <strong>"Email"</strong>, <strong>"Pagamento"</strong> (no formato DD/MM/AAAA ou AAAA-MM-DD) e <strong>"Dias"</strong> (com o número de dias de validade) são necessárias para o sistema funcionar corretamente.</li>
+    <li><strong>Configurações de SMTP:</strong> Estes são os dados do endereço de e-mail que fará os envios (ex: Gmail, Outlook). Preencha o servidor, a porta (geralmente 587), seu e-mail completo e a senha. Lembre-se: para o Gmail, é necessário gerar uma "Senha de App" específica.</li>
+</ul>
+
+<h3 class="mt-4">Evitando Bloqueios de Spam (Throttling)</h3>
+<p>Enviar milhares de e-mails de uma só vez é visto como spam. A seção de <strong>Controle de Velocidade</strong> é a sua ferramenta mais importante para garantir que seus e-mails cheguem.</p>
+<ul>
+    <li><strong>Tamanho do Lote:</strong> Quantos e-mails são enviados por vez. Um bom valor inicial é <strong>15</strong>.</li>
+    <li><strong>Intervalo entre Lotes:</strong> A pausa em segundos entre um lote e outro. Um valor seguro para começar é <strong>60 segundos</strong> (1 minuto).</li>
+</ul>
+<div class="alert alert-info">
+    <strong>Recomendação:</strong> Enviar 15 e-mails a cada 60 segundos é um ritmo seguro que equivale a 900 e-mails por hora, evitando a maioria dos bloqueios automáticos.
+</div>
+
+<hr class="my-4">
+
+<h2 class="mb-3">2. Entendendo as Ferramentas</h2>
+
+<div class="accordion" id="toolsAccordion">
+    <div class="accordion-item">
+        <h2 class="accordion-header">
+            <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="true" aria-controls="collapseOne">
+                <strong>Envio em Massa</strong>
+            </button>
+        </h2>
+        <div id="collapseOne" class="accordion-collapse collapse show" data-bs-parent="#toolsAccordion">
+            <div class="accordion-body">
+                Use esta ferramenta para envios imediatos. Você pode selecionar contatos manualmente em cada página ou usar as <strong>Ações em Massa</strong> (botões na parte inferior). É importante saber que as Ações em Massa sempre consideram <strong>toda a sua base de contatos</strong>, ignorando a paginação. Se você clicar em "Enviar para TODOS os Expirados", o sistema buscará todos os clientes com esse status em toda a sua lista e enviará para eles, não apenas para os que estão visíveis na página. Use o carregador de "Modelos de E-mail" para preencher rapidamente o conteúdo.
+            </div>
+        </div>
+    </div>
+    <div class="accordion-item">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseTwo" aria-expanded="false" aria-controls="collapseTwo">
+                <strong>E-mails Agendados</strong>
+            </button>
+        </h2>
+        <div id="collapseTwo" class="accordion-collapse collapse" data-bs-parent="#toolsAccordion">
+            <div class="accordion-body">
+                Ideal para planejar campanhas. Você pode agendar um e-mail para um <strong>grupo de status</strong> (como todos os "Expirando") ou para uma <strong>lista de e-mails manuais</strong>. Escolha a data/hora e o sistema se encarrega de enviar na hora certa. Na tabela inferior, você pode ver, <strong>Editar</strong> ou <strong>Excluir</strong> seus agendamentos pendentes.
+            </div>
+        </div>
+    </div>
+    <div class="accordion-item">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseThree" aria-expanded="false" aria-controls="collapseThree">
+                <strong>Automações</strong>
+            </button>
+        </h2>
+        <div id="collapseThree" class="accordion-collapse collapse" data-bs-parent="#toolsAccordion">
+            <div class="accordion-body">
+                O coração "inteligente" do painel. Uma vez configuradas e ativadas, essas regras rodam sozinhas.
+                <ul>
+                    <li><strong>Boas-vindas:</strong> O sistema verifica a cada minuto por novos contatos (criados nas últimas 24 horas) e envia o e-mail de boas-vindas. Ele é inteligente e só envia uma vez por contato.</li>
+                    <li><strong>Expiração:</strong> O sistema verifica diariamente os dias restantes de cada cliente e, se encontrar alguém com <strong>exatamente</strong> 7, 3 ou 1 dia(s) restante(s), envia o e-mail de aviso correspondente. Ele só envia um aviso por marco, por dia.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div class="accordion-item">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseFour" aria-expanded="false" aria-controls="collapseFour">
+                <strong>Modelos de E-mail</strong>
+            </button>
+        </h2>
+        <div id="collapseFour" class="accordion-collapse collapse" data-bs-parent="#toolsAccordion">
+            <div class="accordion-body">
+                Economize tempo criando e salvando seus e-mails mais usados. Nesta página, você pode criar, editar e excluir modelos. Eles ficam disponíveis no menu dropdown na página de "Envio em Massa" para serem carregados com um clique.
+            </div>
+        </div>
+    </div>
+    <div class="accordion-item">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseFive" aria-expanded="false" aria-controls="collapseFive">
+                <strong>Histórico de Envios</strong>
+            </button>
+        </h2>
+        <div id="collapseFive" class="accordion-collapse collapse" data-bs-parent="#toolsAccordion">
+            <div class="accordion-body">
+                Um registro completo de cada e-mail individual enviado pelo sistema (seja por envio em massa, agendado ou automação). Para cada registro, você pode:
+                <ul>
+                    <li><strong>Detalhes:</strong> Ver o conteúdo completo do e-mail que foi enviado.</li>
+                    <li><strong>Reenviar este E-mail:</strong> Carrega o conteúdo do e-mail antigo diretamente na página de "Envio em Massa", pronto para ser enviado para novos contatos.</li>
+                    <li><strong>Salvar como Modelo:</strong> Pega o conteúdo de um e-mail já enviado e o salva como um novo template na sua biblioteca.</li>
+                    <li><strong>Excluir:</strong> Remove o registro do histórico (esta ação não pode ser desfeita).</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

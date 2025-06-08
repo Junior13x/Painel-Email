@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}Configurações{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center">
+    <h1>Configurações da Conta</h1>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
+</div>
+<p>Ajuste aqui suas configurações pessoais de conexão com o Baserow e de envio de e-mails.</p>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ category }} mt-3">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
+<hr>
+
+<form method="POST">
+    {% if session.get('role') == 'admin' %}
+    <h4 class="mb-3 text-primary">Configurações da Plataforma (Admin)</h4>
+    <div class="mb-3">
+        <label for="mp_access_token" class="form-label">Mercado Pago - Access Token</label>
+        <input type="password" class="form-control" id="mp_access_token" name="mp_access_token" value="{{ global_settings.get('MERCADO_PAGO_ACCESS_TOKEN', '') }}">
+        <div class="form-text">Sua chave privada de produção do Mercado Pago.</div>
+    </div>
+
+    <hr class="my-4">
+{% endif %}
+
+    <h4 class="mb-3">Configurações do Baserow</h4>
+    <div class="mb-3">
+        <label for="baserow_host" class="form-label">Host do Baserow</label>
+        <input type="text" class="form-control" id="baserow_host" name="baserow_host" value="{{ user_settings['baserow_host'] or '' }}" placeholder="Ex: http://213.199.56.115">
+    </div>
+    <div class="mb-3">
+        <label for="baserow_api_key" class="form-label">Chave de API (Token)</label>
+        <input type="text" class="form-control" id="baserow_api_key" name="baserow_api_key" value="{{ user_settings['baserow_api_key'] or '' }}">
+    </div>
+    <div class="mb-3">
+        <label for="baserow_table_id" class="form-label">ID da Tabela</label>
+        <input type="text" class="form-control" id="baserow_table_id" name="baserow_table_id" value="{{ user_settings['baserow_table_id'] or '' }}">
+    </div>
+
+    <hr class="my-4">
+    <h4 class="mb-3">Configurações de Envio de E-mail (SMTP)</h4>
+    <div class="row">
+        <div class="col-md-8">
+            <label for="smtp_host" class="form-label">Servidor SMTP</label>
+            <input type="text" class="form-control" id="smtp_host" name="smtp_host" value="{{ user_settings['smtp_host'] or '' }}" placeholder="Ex: smtp.gmail.com">
+        </div>
+        <div class="col-md-4">
+            <label for="smtp_port" class="form-label">Porta SMTP</label>
+            <input type="number" class="form-control" id="smtp_port" name="smtp_port" value="{{ user_settings['smtp_port'] or 587 }}" placeholder="Ex: 587">
+        </div>
+    </div>
+    <div class="mb-3 mt-3">
+        <label for="smtp_user" class="form-label">Usuário SMTP (seu e-mail de envio)</label>
+        <input type="email" class="form-control" id="smtp_user" name="smtp_user" value="{{ user_settings['smtp_user'] or '' }}">
+    </div>
+    <div class="mb-3">
+        <label for="smtp_password" class="form-label">Senha SMTP (ou Senha de App)</label>
+        <input type="password" class="form-control" id="smtp_password" name="smtp_password" value="{{ user_settings['smtp_password'] or '' }}">
+    </div>
+
+    <hr class="my-4">
+    <h4 class="mb-3">Controle de Velocidade de Envio (Throttling)</h4>
+    <p class="text-muted">Evite bloqueios de spam configurando o envio em lotes.</p>
+    <div class="row">
+        <div class="col-md-6 mb-3">
+            <label for="batch_size" class="form-label">Tamanho do Lote</label>
+            <input type="number" class="form-control" id="batch_size" name="batch_size" value="{{ user_settings['batch_size'] or 15 }}">
+            <div class="form-text">Quantos e-mails enviar por vez.</div>
+        </div>
+        <div class="col-md-6 mb-3">
+            <label for="delay_seconds" class="form-label">Intervalo entre Lotes (em segundos)</label>
+            <input type="number" class="form-control" id="delay_seconds" name="delay_seconds" value="{{ user_settings['delay_seconds'] or 60 }}">
+            <div class="form-text">Quantos segundos aguardar antes de enviar o próximo lote.</div>
+        </div>
+    </div>
+
+    <button type="submit" class="btn btn-primary mt-3">Salvar Minhas Configurações</button>
+</form>
+{% endblock %}

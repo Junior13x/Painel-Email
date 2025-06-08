@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Pagar com PIX{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card text-center">
+            <div class="card-header">
+                <h3>Assinatura Plano VIP</h3>
+            </div>
+            <div class="card-body">
+                <p>Escaneie o QR Code abaixo com o app do seu banco para pagar.</p>
+                <img src="data:image/png;base64,{{ qr_code_base64 }}" alt="QR Code PIX" class="img-fluid mb-3" style="max-width: 300px; border: 1px solid #ccc; padding: 10px;">
+                <hr>
+                <p>Ou use o PIX Copia e Cola:</p>
+                <div class="input-group mb-3">
+                    <input type="text" class="form-control" value="{{ pix_code }}" id="pixCode" readonly>
+                    <button class="btn btn-outline-secondary" type="button" id="copyBtn">Copiar</button>
+                </div>
+                 <p class="text-muted">Após o pagamento, seu plano será ativado automaticamente em alguns instantes.</p>
+                 <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+            </div>
+            <div class="card-footer">
+                <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Voltar ao Painel</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+{% block tail_scripts %}
+<script>
+    document.getElementById('copyBtn').addEventListener('click', function() {
+        const pixCodeInput = document.getElementById('pixCode');
+        pixCodeInput.select();
+        pixCodeInput.setSelectionRange(0, 99999); // Para dispositivos móveis
+        
+        try {
+            document.execCommand('copy');
+            this.textContent = 'Copiado!';
+            setTimeout(() => { this.textContent = 'Copiar'; }, 2000);
+        } catch (err) {
+            alert('Não foi possível copiar o código. Por favor, copie manualmente.');
+        }
+    });
+</script>
+
+<script>
+    // Função que verifica o status do pagamento no servidor
+    async function verificarStatus() {
+        try {
+            const response = await fetch('{{ url_for("check_plan_status") }}');
+            if (!response.ok) {
+                throw new Error('Erro na rede ou servidor indisponível.');
+            }
+            const data = await response.json();
+
+            console.log('Verificando status:', data.status);
+
+            if (data.status === 'aprovado') {
+                // Se aprovado, para de verificar
+                clearInterval(intervaloDeVerificacao);
+                
+                // Mostra uma mensagem de sucesso e redireciona
+                alert('Pagamento aprovado com sucesso! Bem-vindo ao plano VIP.');
+                window.location.href = '{{ url_for("dashboard") }}';
+            }
+        } catch (error) {
+            console.error('Erro ao verificar status:', error);
+        }
+    }
+
+    // Inicia a verificação a cada 3 segundos (3000 milissegundos)
+    const intervaloDeVerificacao = setInterval(verificarStatus, 3000);
+</script>
+{% endblock %}

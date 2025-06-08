@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}Painel Principal{% endblock %}
+
+{% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap">
+        <div>
+            <h1>Painel de Controle</h1>
+            <p class="lead mb-0">Bem-vindo, <strong>{{ session.get('user_email') }}</strong>!</p>
+        </div>
+        <div class="d-flex align-items-center mt-2 mt-md-0">
+            {% if session.get('user_plan_status') %}
+                <span class="badge rounded-pill fs-6 text-bg-{{ session.user_plan_status.badge_class }}">
+                    Plano {{ session.user_plan_status.plan_name }}
+                    {% if session.user_plan_status.days_left is not none and session.user_plan_status.days_left >= 0 %}
+                        - {{ session.user_plan_status.days_left }} dias restantes
+                    {% endif %}
+                </span>
+            {% endif %}
+        </div>
+    </div>
+    <hr>
+
+    <!-- ============================================= -->
+    <!-- ==== ÁREA DO ADMINISTRADOR (SÓ ADMIN VÊ) ==== -->
+    <!-- ============================================= -->
+    {% if session.get('role') == 'admin' %}
+    <div class="p-4 mb-4 bg-light border rounded-3">
+        <h2 class="display-6">Área do Administrador</h2>
+        <p>Ferramentas exclusivas para o gerenciamento da plataforma.</p>
+        <div class="row g-4 mt-2">
+            <div class="col-lg-4 col-md-6">
+                <div class="card h-100 shadow-sm">
+                    <div class="card-body text-center d-flex flex-column">
+                        <h5 class="card-title">👥 Gerenciar Utilizadores</h5>
+                        <p class="card-text">Crie, edite e gerencie as contas de acesso dos seus clientes.</p>
+                        <a href="{{ url_for('users_page') }}" class="btn btn-primary mt-auto">Gerenciar Utilizadores</a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-4 col-md-6">
+                <div class="card h-100 shadow-sm">
+                    <div class="card-body text-center d-flex flex-column">
+                        <h5 class="card-title">🛠️ Gerenciar Planos</h5>
+                        <p class="card-text">Crie e edite os planos de assinatura, preços e recursos.</p>
+                        <a href="{{ url_for('manage_plans_page') }}" class="btn btn-primary mt-auto">Gerenciar Planos</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <hr class="my-4">
+    {% endif %}
+
+    <!-- ============================================= -->
+    <!-- ==== ÁREA COMUM A TODOS OS UTILIZADORES ==== -->
+    <!-- ============================================= -->
+    <h3 class="mb-3">Suas Ferramentas</h3>
+    <div class="row g-4 mt-1">
+        <!-- Card de Planos -->
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">🚀 Planos e Assinatura</h5>
+                    <p class="card-text">Veja os detalhes do seu plano atual e faça um upgrade.</p>
+                    <a href="{{ url_for('plans_page') }}" class="btn btn-success mt-auto">Ver Planos</a>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Envio em Massa (CORRIGIDO - AGORA VISÍVEL PARA TODOS) -->
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">📧 Envio em Massa</h5>
+                    <p class="card-text">Envie e-mails para listas de contatos e por status.</p>
+                    <a href="{{ url_for('mass_send_page') }}" class="btn btn-primary mt-auto">Acessar</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agendamentos -->
+        {% if 'schedules' in session.get('user_features', []) %}
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">🕒 E-mails Agendados</h5>
+                    <p class="card-text">Programe campanhas para serem enviadas no futuro.</p>
+                    <a href="{{ url_for('schedule_page') }}" class="btn btn-primary mt-auto">Acessar</a>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100 bg-light text-muted">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">🕒 E-mails Agendados</h5>
+                    <p class="card-text">Recurso não incluído no seu plano atual.</p>
+                    <a href="{{ url_for('plans_page') }}" class="btn btn-success mt-auto">Fazer Upgrade</a>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <!-- Automações -->
+        {% if 'automations' in session.get('user_features', []) %}
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">🤖 Automações</h5>
+                    <p class="card-text">Configure e-mails automáticos de boas-vindas e avisos.</p>
+                    <a href="{{ url_for('automations_page') }}" class="btn btn-primary mt-auto">Configurar</a>
+                </div>
+            </div>
+        </div>
+        {% else %}
+         <div class="col-lg-4 col-md-6">
+            <div class="card h-100 bg-light text-muted">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">🤖 Automações</h5>
+                    <p class="card-text">Recurso não incluído no seu plano atual.</p>
+                    <a href="{{ url_for('plans_page') }}" class="btn btn-success mt-auto">Fazer Upgrade</a>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Outros cards (Modelos, Histórico, Configurações, etc.) -->
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">🎨 Modelos de E-mail</h5>
+                    <p class="card-text">Crie e gerencie os seus templates para reutilizar em campanhas.</p>
+                    <a href="{{ url_for('templates_page') }}" class="btn btn-info mt-auto">Gerenciar Modelos</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">📜 Histórico de Envios</h5>
+                    <p class="card-text">Veja um registo de todos os e-mails enviados.</p>
+                    <a href="{{ url_for('history_page') }}" class="btn btn-primary mt-auto">Ver Histórico</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">⚙️ Configurações</h5>
+                    <p class="card-text">Ajuste as chaves de API e credenciais de SMTP.</p>
+                    <a href="{{ url_for('settings_page') }}" class="btn btn-secondary mt-auto">Ajustar</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4 col-md-6">
+            <div class="card h-100">
+                <div class="card-body text-center d-flex flex-column">
+                    <h5 class="card-title">❓ Ajuda e Documentação</h5>
+                    <p class="card-text">Tire as suas dúvidas sobre o funcionamento do painel.</p>
+                    <a href="{{ url_for('help_page') }}" class="btn btn-secondary mt-auto">Consultar Guia</a>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+�

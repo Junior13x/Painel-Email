@@ -1,0 +1,29 @@
+{
+    "BASEROW_HOST": "http://213.199.56.115",
+    "BASEROW_API_KEY": "Ec9oWhPW51nmERtEp8JbU0X301mTFgyH",
+    "BASEROW_TABLE_ID": "1444",
+    "SMTP_HOST": "smtp.gmail.com",
+    "SMTP_PORT": 587,
+    "SMTP_USER": "fusionworkstudio@gmail.com",
+    "SMTP_PASSWORD": "ubof drko ivjw tmyq",
+    "automations": {
+        "welcome": {
+            "enabled": false,
+            "subject": "Teste Boas vindas",
+            "body": "<p>Bem vindo ao Flix Fusion</p>"
+        },
+        "expiry": {
+            "enabled": false,
+            "subject_7_days": "",
+            "body_7_days": "",
+            "subject_3_days": "",
+            "body_3_days": "",
+            "subject_1_day": "",
+            "body_1_day": ""
+        }
+    },
+    "batch_size": 15,
+    "delay_seconds": 60,
+    "MERCADO_PAGO_ACCESS_TOKEN": "APP_USR-4953409271973334-060706-b797dfadf23f45799a3471695a9d327f-388913687",
+    "PLANO_VIP_PRECO": 1.0
+}
