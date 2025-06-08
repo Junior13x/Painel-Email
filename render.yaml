@@ -1,23 +1,18 @@
-# O 'services' define tudo o que vamos criar no Render.
 services:
-  # Primeiro, definimos nossa interface web (o app.py)
+  # O Web Service continua igual
   - type: web
     name: painel-emails-web
     env: python
-    # Especifica o plano gratuito
     plan: free
-    # Comando para instalar as bibliotecas
     buildCommand: "pip install -r requirements.txt"
-    # Comando para iniciar o servidor de produção
     startCommand: "gunicorn app:app"
 
-  # Em segundo lugar, definimos nosso robô (o worker.py)
-  - type: worker
-    name: painel-emails-worker
+  # MUDANÇA: Substituímos o 'worker' por 'cron'
+  - type: cron
+    name: painel-emails-cron
     env: python
-    # Especifica o plano gratuito também para o robô
     plan: free
-    # O worker usa as mesmas bibliotecas, então o comando é o mesmo
-    buildCommand: "pip install -r requirements.txt"
-    # Comando para iniciar o robô
-    startCommand: "python worker.py"
+    # A agenda está no formato UTC. '*/15 * * * *' significa "a cada 15 minutos".
+    schedule: "*/15 * * * *"
+    # O comando é o mesmo, ele apenas rodará o script uma vez.
+    command: "python worker.py"

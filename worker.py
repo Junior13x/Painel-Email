@@ -1,6 +1,6 @@
 import sqlite3
-import time
 from datetime import datetime
+import time
 import json
 # Importa as funções do nosso arquivo de lógica
 from core_logic import (
@@ -15,9 +15,7 @@ def get_db_connection():
     return conn
 
 # --- CONFIGURAÇÃO IMPORTANTE ---
-# Verifique na sua tabela do Baserow qual é o nome exato da coluna
-# que armazena a data de criação do contato e coloque-o aqui.
-COLUNA_DATA_CRIACAO = "Data" # <--- MUDE ESTE VALOR SE O NOME DA SUA COLUNA FOR DIFERENTE
+COLUNA_DATA_CRIACAO = "Data"
 # -----------------------------
 
 def check_and_run_automations(user, all_contacts_processed, conn):
@@ -27,8 +25,8 @@ def check_and_run_automations(user, all_contacts_processed, conn):
 
     automations = json.loads(automations_config_str)
     cursor = conn.cursor()
-    user_settings = dict(user) # Converte a linha do banco para um dicionário
-
+    user_settings = dict(user)
+    
     # --- Automação 1: Boas-vindas ---
     welcome_config = automations.get('welcome', {})
     if welcome_config.get('enabled'):
@@ -73,81 +71,63 @@ def process_pending_schedules(user, all_contacts_processed, conn):
     cursor.execute("SELECT * FROM scheduled_emails WHERE is_sent = FALSE AND user_id = ? AND datetime(send_at) <= datetime('now', 'localtime')", (user['id'],))
     pending_emails = cursor.fetchall()
     
-    if not pending_emails:
-        return
+    if not pending_emails: return
 
     print(f"-> [Usuário: {user['email']}] Encontrados {len(pending_emails)} agendamento(s) para processar.")
-    user_settings = dict(user) # Converte a linha do banco para um dicionário
+    user_settings = dict(user)
 
     for email_job in pending_emails:
-        subject = email_job['subject']
-        body = email_job['body']
+        subject, body = email_job['subject'], email_job['body']
         recipients = []
-
         if email_job['schedule_type'] == 'group':
             target_status = email_job['status_target']
-            if target_status == 'all':
-                recipients = all_contacts_processed
-            else:
-                recipients = [c for c in all_contacts_processed if c['status_badge_class'] == target_status]
-        
+            if target_status == 'all': recipients = all_contacts_processed
+            else: recipients = [c for c in all_contacts_processed if c['status_badge_class'] == target_status]
         elif email_job['schedule_type'] == 'manual':
             if email_job['manual_recipients']:
                 email_list = email_job['manual_recipients'].split(',')
                 recipients = [{'Email': email.strip()} for email in email_list if email.strip()]
 
         print(f"  -> Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
-        
         sent_count, fail_count = send_emails_in_batches(recipients, subject, body, user_settings)
-        
         if fail_count == 0:
             cursor.execute("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = ?", (email_job['id'],))
             conn.commit()
             print(f"  -> Agendamento ID {email_job['id']} concluído e marcado como enviado.")
         else:
-            print(f"  -> Agendamento ID {email_job['id']} concluído com {fail_count} falhas. Não será marcado como enviado para nova tentativa.")
+            print(f"  -> Agendamento ID {email_job['id']} concluído com {fail_count} falhas.")
 
-def main_worker_loop():
-    """Loop principal do worker, agora processando usuário por usuário."""
-    print("--- Worker SaaS Iniciado ---")
-    print("Pressione Ctrl+C para parar.")
-    while True:
+def run_once():
+    """Função principal que roda o ciclo de verificação uma única vez."""
+    print(f"\n[{datetime.now()}] Iniciando ciclo de verificação do Cron Job...")
+    conn = get_db_connection()
+    vip_users = conn.execute("SELECT * FROM users WHERE plan = 'vip'").fetchall()
+    conn.close()
+
+    if not vip_users:
+        print("-> Nenhum usuário VIP ativo encontrado. Encerrando ciclo.")
+        return
+
+    for user in vip_users:
+        user_settings = dict(user)
+        print(f"--- Processando para o usuário: {user_settings['email']} ---")
+        if not all([user_settings.get('baserow_host'), user_settings.get('baserow_api_key'), user_settings.get('smtp_user')]):
+            print(f"-> AVISO: Configurações incompletas para {user_settings['email']}. Pulando.")
+            continue
         try:
-            print(f"\n[{datetime.now()}] Iniciando ciclo de verificação para todos os usuários VIP...")
-            conn = get_db_connection()
-            # Busca todos os usuários VIP que ainda não expiraram
-            vip_users = conn.execute("SELECT * FROM users WHERE plan = 'vip'").fetchall()
-            conn.close()
+            all_contacts_raw = get_all_contacts_from_baserow(user_settings)
+            all_contacts_processed = process_contacts_status(all_contacts_raw)
 
-            if not vip_users:
-                print("-> Nenhum usuário VIP ativo encontrado. Aguardando...")
-            
-            for user in vip_users:
-                user_settings = dict(user)
-                print(f"--- Processando para o usuário: {user_settings['email']} ---")
-
-                if not all([user_settings.get('baserow_host'), user_settings.get('baserow_api_key'), user_settings.get('smtp_user')]):
-                    print(f"-> AVISO: Configurações de Baserow ou SMTP incompletas para {user_settings['email']}. Pulando.")
-                    continue
-
-                all_contacts_raw = get_all_contacts_from_baserow(user_settings)
-                all_contacts_processed = process_contacts_status(all_contacts_raw)
-
-                conn_job = get_db_connection()
-                process_pending_schedules(user_settings, all_contacts_processed, conn_job)
-                check_and_run_automations(user_settings, all_contacts_processed, conn_job)
-                conn_job.close()
-                print(f"--- Ciclo para {user_settings['email']} concluído. ---")
-
-            print(f"[{datetime.now()}] Ciclo geral concluído. Aguardando 60 segundos...")
-            time.sleep(60)
-
-        except KeyboardInterrupt:
-            print("\n--- Worker Parado ---")
-            break
+            conn_job = get_db_connection()
+            process_pending_schedules(user_settings, all_contacts_processed, conn_job)
+            check_and_run_automations(user_settings, all_contacts_processed, conn_job)
+            conn_job.close()
+            print(f"--- Ciclo para {user_settings['email']} concluído. ---")
         except Exception as e:
-            print(f"ERRO CRÍTICO NO WORKER: {e}")
-            time.sleep(120)
+            print(f"  -> ERRO ao processar para o usuário {user_settings['email']}: {e}")
+
+    print(f"[{datetime.now()}] Ciclo geral de verificação concluído.")
 
 if __name__ == '__main__':
-    main_worker_loop()
+    run_once()
+
