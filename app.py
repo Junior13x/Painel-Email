@@ -27,18 +27,13 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Adiciona as colunas de configuração e plano à tabela de usuários, se não existirem.
-    user_columns = [
-        ('plan', "TEXT NOT NULL DEFAULT 'free'"), ('plan_start_date', "DATE"), ('plan_validity_days', "INTEGER"),
-        ('baserow_host', "TEXT"), ('baserow_api_key', "TEXT"), ('baserow_table_id', "TEXT"),
-        ('smtp_host', "TEXT"), ('smtp_port', "INTEGER"), ('smtp_user', "TEXT"), ('smtp_password', "TEXT"),
-        ('batch_size', "INTEGER"), ('delay_seconds', "INTEGER"), ('automations_config', "TEXT")
-    ]
-    
+
+    # --- Estrutura da Tabela USERS ---
     # Verifica a existência da tabela users antes de tentar alterá-la
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users';")
     table_exists = cursor.fetchone()
 
+    # Cria a tabela com todas as colunas se ela não existir
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user',
@@ -47,28 +42,37 @@ def init_db():
             smtp_host TEXT, smtp_port INTEGER, smtp_user TEXT, smtp_password TEXT,
             batch_size INTEGER, delay_seconds INTEGER, automations_config TEXT
         )""")
-    
-    # Adiciona colunas apenas se a tabela já existia (para migrações)
+
+    # Se a tabela já existia, tenta adicionar as colunas uma a uma (para migrações futuras)
     if table_exists:
+        user_columns = [
+            ('plan', "TEXT NOT NULL DEFAULT 'free'"), ('plan_start_date', "DATE"), ('plan_validity_days', "INTEGER"),
+            ('baserow_host', "TEXT"), ('baserow_api_key', "TEXT"), ('baserow_table_id', "TEXT"),
+            ('smtp_host', "TEXT"), ('smtp_port', "INTEGER"), ('smtp_user', "TEXT"), ('smtp_password', "TEXT"),
+            ('batch_size', "INTEGER"), ('delay_seconds', "INTEGER"), ('automations_config', "TEXT")
+        ]
         for col_name, col_type in user_columns:
             try:
                 cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type};")
-            except sqlite3.OperationalError: pass
-
-    # --- LÓGICA PARA CRIAR ADMIN PADRÃO ---
-    cursor.execute("SELECT COUNT(id) FROM users WHERE role = 'admin'")
-    admin_count = cursor.fetchone()[0]
-    if admin_count == 0:
-        print("Nenhum administrador encontrado. Criando usuário admin padrão...")
+            except sqlite3.OperationalError:
+                pass # Coluna já existe, ignora o erro
+    
+    # --- Criação do Admin Padrão ---
+    # Após garantir que a tabela está com a estrutura correta, verifica se existe um admin
+    cursor.execute("SELECT COUNT(id) FROM users")
+    user_count = cursor.fetchone()[0]
+    if user_count == 0:
+        print("Nenhum usuário encontrado. Criando usuário admin padrão...")
         default_email = 'junior@admin.com'
-        default_pass = '130896'
+        default_pass = '130896' # Lembre-se de trocar essa senha depois
         password_hash = generate_password_hash(default_pass)
         cursor.execute(
-            "INSERT INTO users (email, password_hash, role, plan) VALUES (?, ?, 'admin', 'vip')",
+            "INSERT INTO users (email, password_hash, role, plan, plan_validity_days) VALUES (?, ?, 'admin', 'vip', 9999)",
             (default_email, password_hash)
         )
-        print(f"Usuário admin criado: {default_email} / Senha: {default_pass}")
-    
+        print(f"ADMIN PADRÃO CRIADO! E-mail: {default_email} | Senha: {default_pass}")
+
+    # --- Outras Tabelas ---
     try: cursor.execute("ALTER TABLE envio_historico ADD COLUMN body TEXT;")
     except sqlite3.OperationalError: pass
     try: cursor.execute("ALTER TABLE scheduled_emails ADD COLUMN user_id INTEGER;")
@@ -79,8 +83,10 @@ def init_db():
     cursor.execute("CREATE TABLE IF NOT EXISTS envio_historico (id INTEGER PRIMARY KEY, user_id INTEGER, recipient_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT, sent_at TEXT NOT NULL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS scheduled_emails (id INTEGER PRIMARY KEY, user_id INTEGER, schedule_type TEXT NOT NULL, status_target TEXT, manual_recipients TEXT, subject TEXT NOT NULL, body TEXT NOT NULL, send_at DATETIME NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, is_sent BOOLEAN DEFAULT FALSE)")
     cursor.execute("CREATE TABLE IF NOT EXISTS email_templates (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(user_id, name))")
+    
     conn.commit()
     conn.close()
+
 
 # ===============================================================
 # == FUNÇÕES DE LÓGICA (HELPERS) ==
@@ -342,36 +348,37 @@ def dashboard():
 def users_page():
     conn = get_db_connection()
     user_count = conn.execute("SELECT count(id) FROM users").fetchone()[0]
-    if user_count > 0:
-        if 'logged_in' not in session:
-            flash("Por favor, faça login para acessar esta página.", "warning"); conn.close(); return redirect(url_for('login_page'))
-        if session.get('role') != 'admin':
-            flash("Você não tem permissão para acessar esta página.", "danger"); conn.close(); return redirect(url_for('dashboard'))
+    # Protege a página se já existir um usuário e o logado não for admin
+    if user_count > 0 and (not session.get('logged_in') or session.get('role') != 'admin'):
+        flash("Você não tem permissão para acessar esta página.", "danger")
+        return redirect(url_for('dashboard'))
+
     if request.method == 'POST':
-        email, password, role = request.form.get('email'), request.form.get('password'), request.form.get('role', 'user')
-        if not email or not password: flash("E-mail e senha são obrigatórios.", "warning")
+        email, password, role, plan, validity_days = request.form.get('email'), request.form.get('password'), request.form.get('role', 'user'), request.form.get('plan', 'free'), request.form.get('validity_days')
+
+        if not email or not password:
+            flash("E-mail e senha são obrigatórios.", "warning")
         else:
             try:
-                conn.execute("INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)",(email, generate_password_hash(password), role))
+                start_date = datetime.now().strftime('%Y-%m-%d') if plan == 'vip' else None
+                password_hash = generate_password_hash(password)
+                conn.execute(
+                    "INSERT INTO users (email, password_hash, role, plan, plan_start_date, plan_validity_days) VALUES (?, ?, ?, ?, ?, ?)",
+                    (email, password_hash, role, plan, int(validity_days) if validity_days else None, start_date)
+                )
                 conn.commit()
                 flash(f"Usuário '{email}' criado com sucesso!", "success")
-            except sqlite3.IntegrityError: flash(f"O e-mail '{email}' já está cadastrado.", "danger")
+            except sqlite3.IntegrityError:
+                flash(f"O e-mail '{email}' já está cadastrado.", "danger")
+            except Exception as e:
+                flash(f"Ocorreu um erro: {e}", "danger")
+        
+        conn.close()
         return redirect(url_for('users_page'))
-    
-    # LÓGICA ATUALIZADA PARA INCLUIR A CONTAGEM DE ENVIOS
-    users_raw = conn.execute("SELECT * FROM users ORDER BY id ASC").fetchall()
-    users_list = []
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    for user_row in users_raw:
-        user_data = dict(user_row)
-        if user_data.get('last_send_date') == today_str:
-            user_data['sends_today_count'] = user_data['sends_today']
-        else:
-            user_data['sends_today_count'] = 0
-        users_list.append(user_data)
-            
+
+    users = conn.execute("SELECT * FROM users ORDER BY id ASC").fetchall()
     conn.close()
-    return render_template('users.html', users=users_list)
+    return render_template('users.html', users=users)
 
 @app.route('/users/edit/<int:user_id>', methods=['GET', 'POST'])
 @login_required
