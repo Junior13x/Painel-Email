@@ -1,18 +1,18 @@
 services:
-  # O Web Service continua igual
+  # Define o serviço da interface web (app.py)
   - type: web
     name: painel-emails-web
     env: python
-    plan: free
+    plan: free # Especifica o plano gratuito
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn app:app"
 
-  # MUDANÇA: Substituímos o 'worker' por 'cron'
+  # Define o robô de automação como um Cron Job
   - type: cron
     name: painel-emails-cron
     env: python
-    plan: free
-    # A agenda está no formato UTC. '*/15 * * * *' significa "a cada 15 minutos".
+    plan: free # Cron Jobs também estão no plano gratuito
+    # Agenda para rodar a cada 15 minutos
     schedule: "*/15 * * * *"
-    # O comando é o mesmo, ele apenas rodará o script uma vez.
+    # Comando que será executado
     command: "python worker.py"
