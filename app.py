@@ -60,8 +60,8 @@ def init_db():
     admin_count = cursor.fetchone()[0]
     if admin_count == 0:
         print("Nenhum administrador encontrado. Criando usuário admin padrão...")
-        default_email = 'admin@painel.com'
-        default_pass = 'admin123'
+        default_email = 'junior@admin.com'
+        default_pass = '130896'
         password_hash = generate_password_hash(default_pass)
         cursor.execute(
             "INSERT INTO users (email, password_hash, role, plan) VALUES (?, ?, 'admin', 'vip')",
