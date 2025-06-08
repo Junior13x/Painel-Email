@@ -10,7 +10,7 @@ import mercadopago
 import smtplib
 from email.message import EmailMessage
 import time
-
+import threading
 app = Flask(__name__)
 app.secret_key = 'uma-chave-secreta-muito-dificil-de-adivinhar'
 
@@ -993,8 +993,129 @@ def templates_page():
     conn.close()
     return render_template('templates.html', templates=templates)
 
-# --- INICIALIZAÇÃO ---
+# --- LÓGICA DO WORKER (ROBÔ) ---
+
+def worker_check_and_run_automations(user_settings, all_contacts_processed, conn):
+    """Verifica e executa as automações para um usuário específico."""
+    automations_config_str = user_settings.get('automations_config')
+    if not automations_config_str: return
+
+    automations = json.loads(automations_config_str)
+    cursor = conn.cursor()
+    
+    # Automação de Boas-vindas
+    welcome_config = automations.get('welcome', {})
+    if welcome_config.get('enabled'):
+        print(f"  -> [Usuário: {user_settings['email']}] Verificando Boas-vindas...")
+        recipients_welcome = []
+        subject, body = welcome_config.get('subject'), welcome_config.get('body')
+        if subject and body:
+            for contact in all_contacts_processed:
+                created_on_str = contact.get("Data") # Usando a coluna 'Data'
+                if created_on_str:
+                    created_date = parse_date_string(created_on_str.split('T')[0])
+                    if created_date and (datetime.now() - created_date).days < 1:
+                        cursor.execute("SELECT id FROM envio_historico WHERE user_id = ? AND recipient_email = ? AND subject = ?", (user_settings['id'], contact.get('Email'), subject))
+                        if cursor.fetchone() is None:
+                            recipients_welcome.append(contact)
+            if recipients_welcome:
+                print(f"    -> Encontrados {len(recipients_welcome)} novo(s) contato(s) para boas-vindas.")
+                send_emails_in_batches(recipients_welcome, subject, body, user_settings)
+
+    # Automação de Expiração
+    expiry_config = automations.get('expiry', {})
+    if expiry_config.get('enabled'):
+        print(f"  -> [Usuário: {user_settings['email']}] Verificando Expirações...")
+        for days_left in [7, 3, 1]:
+            recipients_expiry = []
+            subject, body = expiry_config.get(f'subject_{days_left}_days'), expiry_config.get(f'body_{days_left}_days')
+            if subject and body:
+                for contact in all_contacts_processed:
+                    if contact.get('remaining_days_int') == days_left:
+                        cursor.execute("SELECT id FROM envio_historico WHERE user_id = ? AND recipient_email = ? AND subject = ? AND date(sent_at) = date('now', 'localtime')", (user_settings['id'], contact.get('Email'), subject))
+                        if cursor.fetchone() is None:
+                            recipients_expiry.append(contact)
+                if recipients_expiry:
+                    print(f"    -> Encontrados {len(recipients_expiry)} contato(s) expirando em {days_left} dia(s).")
+                    send_emails_in_batches(recipients_expiry, subject, body, user_settings)
+
+
+def worker_process_pending_schedules(user_settings, all_contacts_processed, conn):
+    """Processa e-mails da fila de agendamento para um usuário específico."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scheduled_emails WHERE is_sent = FALSE AND user_id = ? AND datetime(send_at) <= datetime('now', 'localtime')", (user_settings['id'],))
+    pending_emails = cursor.fetchall()
+    
+    if not pending_emails: return
+
+    print(f"-> [Usuário: {user_settings['email']}] Encontrados {len(pending_emails)} agendamento(s) para processar.")
+    for email_job in pending_emails:
+        subject, body = email_job['subject'], email_job['body']
+        recipients = []
+        if email_job['schedule_type'] == 'group':
+            target_status = email_job['status_target']
+            if target_status == 'all': recipients = all_contacts_processed
+            else: recipients = [c for c in all_contacts_processed if c['status_badge_class'] == target_status]
+        elif email_job['schedule_type'] == 'manual':
+            if email_job['manual_recipients']:
+                email_list = email_job['manual_recipients'].split(',')
+                recipients = [{'Email': email.strip(), 'id': user_settings['id']} for email in email_list if email.strip()]
+
+        print(f"  -> Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
+        sent_count, fail_count = send_emails_in_batches(recipients, subject, body, user_settings)
+        if fail_count == 0:
+            cursor.execute("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = ?", (email_job['id'],))
+            conn.commit()
+            print(f"  -> Agendamento ID {email_job['id']} concluído e marcado como enviado.")
+        else:
+            print(f"  -> Agendamento ID {email_job['id']} concluído com {fail_count} falhas.")
+
+
+def worker_main_loop():
+    """Loop principal do worker, agora processando usuário por usuário."""
+    print("--- Worker de Fundo Iniciado ---")
+    while True:
+        try:
+            print(f"\n[{datetime.now()}] Worker: Iniciando ciclo de verificação...")
+            conn = get_db_connection()
+            vip_users = conn.execute("SELECT * FROM users WHERE plan = 'vip'").fetchall()
+            conn.close()
+
+            if not vip_users:
+                print("-> Worker: Nenhum usuário VIP ativo encontrado.")
+            
+            for user in vip_users:
+                user_settings = dict(user)
+                print(f"--- Processando para o usuário: {user_settings['email']} ---")
+                if not all([user_settings.get('baserow_host'), user_settings.get('baserow_api_key'), user_settings.get('smtp_user')]):
+                    print(f"-> AVISO: Configurações incompletas para {user_settings['email']}. Pulando.")
+                    continue
+                try:
+                    all_contacts_raw = get_all_contacts_from_baserow(user_settings)
+                    all_contacts_processed = process_contacts_status(all_contacts_raw)
+
+                    conn_job = get_db_connection()
+                    worker_process_pending_schedules(user_settings, all_contacts_processed, conn_job)
+                    worker_check_and_run_automations(user_settings, all_contacts_processed, conn_job)
+                    conn_job.close()
+                    print(f"--- Ciclo para {user_settings['email']} concluído. ---")
+                except Exception as e:
+                    print(f"  -> ERRO ao processar para o usuário {user_settings['email']}: {e}")
+
+            print(f"[{datetime.now()}] Worker: Ciclo geral concluído. Aguardando 5 minutos...")
+            time.sleep(300) # O worker verifica a cada 5 minutos
+
+        except KeyboardInterrupt:
+            print("\n--- Worker Parado ---")
+            break
+        except Exception as e:
+            print(f"ERRO CRÍTICO NO WORKER: {e}")
+            time.sleep(60)
+
 if __name__ == '__main__':
     init_db()
-    populate_features()
-    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=True)
+    # Inicia o worker em um processo de fundo (thread)
+    worker_thread = threading.Thread(target=worker_main_loop, daemon=True)
+    worker_thread.start()
+    # Inicia a aplicação web
+    app.run(debug=False, use_reloader=True)

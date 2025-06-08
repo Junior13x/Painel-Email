@@ -1,18 +1,7 @@
 services:
-  # Define o serviço da interface web (app.py)
   - type: web
-    name: painel-emails-web
+    name: painel-emails
     env: python
-    plan: free # Especifica o plano gratuito
-    buildCommand: "pip install -r requirements.txt"
+    plan: free
+    buildCommand: "pip install -r requirements.txt; python -c 'import sqlite3; conn = sqlite3.connect(\"painel.db\"); conn.close()'"
     startCommand: "gunicorn app:app"
-
-  # Define o robô de automação como um Cron Job
-  - type: cron
-    name: painel-emails-cron
-    env: python
-    plan: free # Cron Jobs também estão no plano gratuito
-    # Agenda para rodar a cada 15 minutos
-    schedule: "*/15 * * * *"
-    # Comando que será executado
-    command: "python worker.py"
