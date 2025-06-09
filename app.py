@@ -56,7 +56,6 @@ def init_db_command():
             print("Tabelas antigas removidas (se existiam).")
 
             # --- Criação de Todas as Tabelas ---
-            # A ordem é importante por causa das chaves estrangeiras
             conn.execute(text("CREATE TABLE features (id SERIAL PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, description TEXT);"))
             conn.execute(text("CREATE TABLE plans (id SERIAL PRIMARY KEY, name TEXT NOT NULL, price NUMERIC(10, 2) NOT NULL, validity_days INTEGER NOT NULL, daily_send_limit INTEGER DEFAULT 25, is_active BOOLEAN DEFAULT TRUE);"))
             conn.execute(text("""
@@ -77,8 +76,13 @@ def init_db_command():
             conn.execute(text("CREATE TABLE email_templates (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), name TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(user_id, name));"))
             print("Tabelas criadas com sucesso.")
 
+            # --- Dados Iniciais ---
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Agendamentos', 'schedules', 'Permite agendar envios de e-mail para o futuro.');"))
-            print("Features iniciais inseridas.")
+            conn.execute(text("INSERT INTO plans (name, price, validity_days, daily_send_limit, is_active) VALUES ('VIP', 99.99, 30, 500, TRUE);"))
+            result = conn.execute(text("SELECT id FROM plans WHERE name = 'VIP';")).scalar()
+            conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, (SELECT id FROM features WHERE slug='schedules'));"), {'pid': result})
+
+            print("Features e Plano VIP iniciais inseridos.")
 
             default_email = 'junior@admin.com'
             default_pass = '130896'
@@ -378,11 +382,13 @@ def edit_user_page(user_id):
             with conn.begin():
                 if not plan_id_str or plan_id_str == 'free':
                     conn.execute(text("UPDATE users SET plan_id = NULL, plan_expiration_date = NULL WHERE id = :uid"), {'uid': user_id})
+                    flash(f"Usuário ID {user_id} definido como Grátis.", "info")
                 else:
                     validity_days = int(validity_days_str or 30)
                     expiration_date = datetime.now() + timedelta(days=validity_days)
                     conn.execute(text("UPDATE users SET plan_id = :pid, plan_expiration_date = :exp WHERE id = :uid"), {'pid': int(plan_id_str), 'exp': expiration_date.date(), 'uid': user_id})
-            flash(f"Plano do usuário ID {user_id} atualizado!", "success")
+                    plan_name = conn.execute(text("SELECT name FROM plans WHERE id = :pid"), {'pid': int(plan_id_str)}).scalar_one_or_none() or "desconhecido"
+                    flash(f"Usuário ID {user_id} atualizado para o plano '{plan_name}'!", "success")
             return redirect(url_for('users_page'))
         user = conn.execute(text("SELECT * FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
         all_plans = conn.execute(text("SELECT * FROM plans WHERE is_active = TRUE")).mappings().fetchall()
@@ -530,6 +536,7 @@ def mp_webhook():
 # --- ROTAS DE FUNCIONALIDADES ---
 @app.route('/envio-em-massa', methods=['GET', 'POST'])
 @login_required
+@feature_required('schedules')
 def mass_send_page():
     user_id = session['user_id']
     settings = load_user_settings(user_id)
@@ -656,6 +663,7 @@ def settings_page():
 
 @app.route('/history')
 @login_required
+@feature_required('schedules')
 def history_page():
     conn = None
     try:
@@ -667,6 +675,7 @@ def history_page():
 
 @app.route('/history/resend', methods=['POST'])
 @login_required
+@feature_required('schedules')
 def resend_from_history():
     session['resend_subject'] = request.form.get('subject')
     session['resend_body'] = request.form.get('body')
@@ -675,6 +684,7 @@ def resend_from_history():
 
 @app.route('/history/save-as-template', methods=['POST'])
 @login_required
+@feature_required('schedules')
 def save_history_as_template():
     template_name, subject, body, user_id = request.form.get('template_name'), request.form.get('subject'), request.form.get('body'), session['user_id']
     if not all([template_name, subject, body]):
@@ -697,6 +707,7 @@ def save_history_as_template():
 
 @app.route('/templates', methods=['GET', 'POST'])
 @login_required
+@feature_required('schedules')
 def templates_page():
     conn, user_id = None, session['user_id']
     try:
