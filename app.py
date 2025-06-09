@@ -12,6 +12,8 @@ import smtplib
 from email.message import EmailMessage
 import time
 import threading
+from dotenv import load_dotenv
+load_dotenv()
 app = Flask(__name__)
 app.secret_key = 'uma-chave-secreta-muito-dificil-de-adivinhar'
 
