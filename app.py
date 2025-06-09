@@ -449,40 +449,31 @@ def dashboard():
 
 # --- ROTAS DE ADMINISTRAÇÃO ---
 @app.route('/users', methods=['GET', 'POST'])
+@login_required
+@admin_required
 def users_page():
-    conn = get_db_connection()
-    user_count = conn.execute("SELECT count(id) FROM users").fetchone()[0]
-    # Protege a página se já existir um usuário e o logado não for admin
-    if user_count > 0 and (not session.get('logged_in') or session.get('role') != 'admin'):
-        flash("Você não tem permissão para acessar esta página.", "danger")
-        return redirect(url_for('dashboard'))
-
-    if request.method == 'POST':
-        email, password, role, plan, validity_days = request.form.get('email'), request.form.get('password'), request.form.get('role', 'user'), request.form.get('plan', 'free'), request.form.get('validity_days')
-
-        if not email or not password:
-            flash("E-mail e senha são obrigatórios.", "warning")
-        else:
-            try:
-                start_date = datetime.now().strftime('%Y-%m-%d') if plan == 'vip' else None
-                password_hash = generate_password_hash(password)
-                conn.execute(
-                    "INSERT INTO users (email, password_hash, role, plan, plan_start_date, plan_validity_days) VALUES (?, ?, ?, ?, ?, ?)",
-                    (email, password_hash, role, plan, int(validity_days) if validity_days else None, start_date)
-                )
-                conn.commit()
-                flash(f"Usuário '{email}' criado com sucesso!", "success")
-            except sqlite3.IntegrityError:
-                flash(f"O e-mail '{email}' já está cadastrado.", "danger")
-            except Exception as e:
-                flash(f"Ocorreu um erro: {e}", "danger")
+    conn = None
+    try:
+        conn = get_db_connection()
+        if request.method == 'POST':
+            email, password, role = request.form.get('email'), request.form.get('password'), request.form.get('role', 'user')
+            if email and password:
+                try:
+                    password_hash = generate_password_hash(password)
+                    conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:e, :ph, :r)"), {'e': email, 'ph': password_hash, 'r': role})
+                    conn.commit()
+                    flash(f"Usuário '{email}' criado com sucesso!", "success")
+                except sqlalchemy_exc.IntegrityError:
+                    conn.rollback()
+                    flash(f"O e-mail '{email}' já está cadastrado.", "danger")
+            else:
+                flash("E-mail e senha são obrigatórios.", "warning")
+            return redirect(url_for('users_page'))
         
-        conn.close()
-        return redirect(url_for('users_page'))
-
-    users = conn.execute("SELECT * FROM users ORDER BY id ASC").fetchall()
-    conn.close()
-    return render_template('users.html', users=users)
+        users = conn.execute(text("SELECT * FROM users ORDER BY id ASC")).mappings().fetchall()
+        return render_template('users.html', users=users)
+    finally:
+        if conn: conn.close()
 
 @app.route('/users/edit/<int:user_id>', methods=['GET', 'POST'])
 @login_required
@@ -526,29 +517,36 @@ def delete_user(user_id):
 @login_required
 @admin_required
 def manage_plans_page():
-    conn = get_db_connection()
-    if request.method == 'POST':
-        name = request.form.get('name')
-        price = float(request.form.get('price', 0))
-        validity_days = int(request.form.get('validity_days', 30))
-        daily_send_limit = int(request.form.get('daily_send_limit', 50))
-        if not name:
-            flash("O nome do plano é obrigatório.", "danger")
+    conn = None
+    try:
+        conn = get_db_connection()
+        if request.method == 'POST':
+            # Lógica para criar um novo plano
+            name = request.form.get('name')
+            price = float(request.form.get('price', 0))
+            validity_days = int(request.form.get('validity_days', 30))
+            daily_send_limit = int(request.form.get('daily_send_limit', 50))
+            selected_features_ids = request.form.getlist('features')
+            
+            if not name:
+                flash("O nome do plano é obrigatório.", "danger")
+            else:
+                result = conn.execute(
+                    text("INSERT INTO plans (name, price, validity_days, daily_send_limit) VALUES (:n, :p, :vd, :dsl) RETURNING id"),
+                    {'n': name, 'p': price, 'vd': validity_days, 'dsl': daily_send_limit}
+                )
+                new_plan_id = result.scalar()
+                for feature_id in selected_features_ids:
+                    conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, :fid)"), {'pid': new_plan_id, 'fid': int(feature_id)})
+                conn.commit()
+                flash(f"Plano '{name}' criado com sucesso!", "success")
             return redirect(url_for('manage_plans_page'))
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO plans (name, price, validity_days, daily_send_limit) VALUES (?, ?, ?, ?)", (name, price, validity_days, daily_send_limit))
-        new_plan_id = cursor.lastrowid
-        selected_features_ids = request.form.getlist('features')
-        conn.execute("DELETE FROM plan_features WHERE plan_id = ?", (new_plan_id,))
-        for feature_id in selected_features_ids:
-            conn.execute("INSERT INTO plan_features (plan_id, feature_id) VALUES (?, ?)", (new_plan_id, int(feature_id)))
-        conn.commit()
-        flash(f"Plano '{name}' criado com sucesso!", "success")
-        return redirect(url_for('manage_plans_page'))
-    plans = conn.execute("SELECT * FROM plans ORDER BY price").fetchall()
-    features = conn.execute("SELECT * FROM features ORDER BY id").fetchall()
-    conn.close()
-    return render_template('manage_plans.html', plans=plans, all_features=features)
+
+        plans = conn.execute(text("SELECT * FROM plans ORDER BY price")).mappings().fetchall()
+        features = conn.execute(text("SELECT * FROM features ORDER BY id")).mappings().fetchall()
+        return render_template('manage_plans.html', plans=plans, all_features=features)
+    finally:
+        if conn: conn.close()
 
 @app.route('/admin/plans/delete/<int:plan_id>', methods=['POST'])
 @login_required
@@ -577,6 +575,7 @@ def plans_page():
         return render_template('planos.html', plans_data=plans_data, master_features=master_features)
     finally:
         if conn: conn.close()
+
 
 @app.route('/criar-pagamento', methods=['POST'])
 @login_required
@@ -638,26 +637,18 @@ def mp_webhook():
 @app.route('/envio-em-massa', methods=['GET', 'POST'])
 @login_required
 def mass_send_page():
-    # Esta função é muito complexa e precisa ser refatorada com cuidado.
-    # Por enquanto, vamos focar em carregar a página sem erros.
     conn = None
     try:
         conn = get_db_connection()
         user_id = session['user_id']
-        
         if request.method == 'POST':
-            # A lógica de envio de email será adicionada aqui depois
-            flash("Funcionalidade de envio em desenvolvimento.", "info")
+            flash("Funcionalidade de envio ainda em desenvolvimento.", "info")
             return redirect(url_for('mass_send_page'))
         
-        # Lógica GET para carregar a página
-        error = None
-        contacts = []
-        # A função get_all_contacts_from_baserow precisa de settings, que é carregado do BD.
-        # Vamos simplificar por agora para evitar erros em cadeia.
-        
         templates = conn.execute(text("SELECT * FROM email_templates WHERE user_id = :uid ORDER BY name"), {'uid': user_id}).mappings().fetchall()
-        return render_template('envio_em-massa.html', contacts=contacts, error=error, templates=templates)
+        return render_template('envio-em-massa.html', contacts=[], error=None, templates=templates)
+    except jinja2.exceptions.TemplateNotFound:
+        return "Erro: Template 'envio-em-massa.html' não encontrado. Verifique o nome do arquivo.", 404
     finally:
         if conn: conn.close()
 
@@ -669,21 +660,22 @@ def schedule_page():
         conn = get_db_connection()
         user_id = session['user_id']
         if request.method == 'POST':
-            # Lógica para criar/editar um agendamento
             subject = request.form.get('subject')
             body = request.form.get('body')
             send_at = request.form.get('send_at')
-            conn.execute(
-                text("INSERT INTO scheduled_emails (user_id, subject, body, send_at, schedule_type) VALUES (:uid, :s, :b, :sa, 'manual')"),
-                {'uid': user_id, 's': subject, 'b': body, 'sa': send_at}
-            )
-            conn.commit()
-            flash("Agendamento salvo!", "success")
+            if subject and body and send_at:
+                conn.execute(
+                    text("INSERT INTO scheduled_emails (user_id, subject, body, send_at, schedule_type) VALUES (:uid, :s, :b, :sa, 'manual')"),
+                    {'uid': user_id, 's': subject, 'b': body, 'sa': send_at}
+                )
+                conn.commit()
+                flash("Agendamento salvo!", "success")
+            else:
+                flash("Todos os campos são obrigatórios.", "warning")
             return redirect(url_for('schedule_page'))
 
         pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE ORDER BY send_at ASC"), {'uid': user_id}).mappings().fetchall()
-        # CORREÇÃO: Passando um dicionário vazio para evitar o erro no template
-        return render_template('agendamento.html', pending_emails=pending_emails, schedule_data={})
+        return render_template('agendamento.html', pending_emails=pending_emails, schedule_data=None) # Passando None para o template lidar
     finally:
         if conn: conn.close()
 
@@ -757,26 +749,17 @@ def settings_page():
                 'smtp_password': request.form.get('smtp_password'), 'batch_size': int(request.form.get('batch_size') or 15),
                 'delay_seconds': int(request.form.get('delay_seconds') or 60), 'uid': user_id
             }
-            query = text("""UPDATE users SET
-                baserow_host = :baserow_host, baserow_api_key = :baserow_api_key, baserow_table_id = :baserow_table_id,
-                smtp_host = :smtp_host, smtp_port = :smtp_port, smtp_user = :smtp_user, smtp_password = :smtp_password,
-                batch_size = :batch_size, delay_seconds = :delay_seconds
-                WHERE id = :uid""")
+            query = text("UPDATE users SET baserow_host = :baserow_host, baserow_api_key = :baserow_api_key, baserow_table_id = :baserow_table_id, smtp_host = :smtp_host, smtp_port = :smtp_port, smtp_user = :smtp_user, smtp_password = :smtp_password, batch_size = :batch_size, delay_seconds = :delay_seconds WHERE id = :uid")
             conn.execute(query, params)
             conn.commit()
             flash("Configurações salvas com sucesso!", "success")
             return redirect(url_for('settings_page'))
         
         user_settings = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()
-        
-        # CORREÇÃO: Removendo a dependência do 'settings.json' e passando sempre um dicionário
-        # A chave do Mercado Pago agora deve ser configurada APENAS como variável de ambiente
-        mp_token = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', '')
-        global_settings = {'MERCADO_PAGO_ACCESS_TOKEN': mp_token}
-        
-        return render_template('settings.html', user_settings=user_settings, global_settings=global_settings)
+        return render_template('settings.html', user_settings=user_settings)
     finally:
         if conn: conn.close()
+
 
 def save_settings(settings):
     """Salva um dicionário de configurações no arquivo settings.json"""
@@ -1021,26 +1004,26 @@ def templates_page():
         conn = get_db_connection()
         user_id = session['user_id']
         if request.method == 'POST':
-            # Adapte para seus nomes de formulário
             name = request.form.get('template_name')
             subject = request.form.get('subject')
             body = request.form.get('body')
-            if not all([name, subject, body]):
-                flash("Todos os campos são necessários.", "warning")
-            else:
+            if name and subject and body:
                 try:
                     conn.execute(text("INSERT INTO email_templates (user_id, name, subject, body) VALUES (:uid, :n, :s, :b)"), {'uid': user_id, 'n': name, 's': subject, 'b': body})
                     conn.commit()
                     flash("Template salvo com sucesso!", "success")
                 except sqlalchemy_exc.IntegrityError:
                     conn.rollback()
-                    flash("Um template com este nome já existe.", "danger")
+                    flash("Um template com esse nome já existe.", "danger")
+            else:
+                flash("Todos os campos são obrigatórios.", "warning")
             return redirect(url_for('templates_page'))
-            
+        
         templates = conn.execute(text("SELECT * FROM email_templates WHERE user_id = :uid ORDER BY name"), {'uid': user_id}).mappings().fetchall()
         return render_template('templates.html', templates=templates)
     finally:
         if conn: conn.close()
+
 
 # --- LÓGICA DO WORKER (ROBÔ) ---
 
