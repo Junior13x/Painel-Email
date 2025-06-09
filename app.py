@@ -27,7 +27,6 @@ def get_db_connection():
     if not db_url:
         raise ValueError("Variável de ambiente DATABASE_URL não foi configurada.")
     
-    # Corrige a URL para compatibilidade com SQLAlchemy
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
         
@@ -180,77 +179,65 @@ def init_db_command():
 
 @app.context_processor
 def inject_user_send_limit():
-    """
-    Injeta o limite de envio diário do usuário em todos os templates.
-    Isso evita ter que calcular isso em cada rota.
-    """
     if 'user_id' not in session:
-        return {} # Retorna um dicionário vazio se o usuário não estiver logado
-
-    conn = get_db_connection()
-    user_id = session['user_id']
-    
-    # Consulta 1 - CORRIGIDA
-    user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
-    
-    if not user:
-        conn.close()
         return {}
+    conn = None
+    try:
+        conn = get_db_connection()
+        user_id = session['user_id']
+        user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+        
+        if not user:
+            return {}
 
-    # Admin tem envios ilimitados
-    if user['role'] == 'admin':
-        conn.close()
-        return dict(daily_limit=-1, sends_remaining=-1)
+        if user['role'] == 'admin':
+            return dict(daily_limit=-1, sends_remaining=-1)
 
-    # Consulta 2 - CORRIGIDA
-    plan = None
-    if user['plan_id']:
-        plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :plan_id"), {'plan_id': user['plan_id']}).mappings().fetchone()
-    
-    # Se o usuário não tem plano (Free) ou o plano não tem limite definido
-    daily_limit = plan['daily_send_limit'] if plan else 25
+        plan = None
+        if user['plan_id']:
+            plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :plan_id"), {'plan_id': user['plan_id']}).mappings().fetchone()
+        
+        daily_limit = plan['daily_send_limit'] if plan else 25
 
-    if daily_limit == -1:
-        conn.close()
-        return dict(daily_limit=-1, sends_remaining=-1)
+        if daily_limit == -1:
+            return dict(daily_limit=-1, sends_remaining=-1)
 
-    sends_today = 0
-    # Acessando 'last_send_date' e 'sends_today' do objeto 'user' que já é um mapping
-    if user['last_send_date'] and user['last_send_date'].strftime('%Y-%m-%d') == datetime.now().strftime('%Y-%m-%d'):
-        sends_today = user['sends_today']
-    
-    sends_remaining = daily_limit - sends_today
-    conn.close()
-    
-    return dict(daily_limit=daily_limit, sends_remaining=sends_remaining)
+        sends_today = 0
+        if user['last_send_date'] and user['last_send_date'].strftime('%Y-%m-%d') == datetime.now().strftime('%Y-%m-%d'):
+            sends_today = user['sends_today']
+        
+        sends_remaining = daily_limit - sends_today
+        return dict(daily_limit=daily_limit, sends_remaining=sends_remaining)
+    finally:
+        if conn:
+            conn.close()
 
 def load_settings(user_id=None):
-    """Carrega as configurações do usuário e globais, dando prioridade às variáveis de ambiente."""
     settings = {}
-    
-    # **NOVA LÓGICA:** Carrega o token a partir das variáveis de ambiente primeiro
     mp_token = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN')
     if mp_token:
         settings['MERCADO_PAGO_ACCESS_TOKEN'] = mp_token
 
-    conn = get_db_connection()
+    conn = None
     if user_id:
-        user_data = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        if user_data:
-            user_keys = user_data.keys()
-            db_keys = ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_password', 'batch_size', 'delay_seconds']
-            for key in db_keys:
-                if key in user_keys: settings[key.upper()] = user_data[key]
+        try:
+            conn = get_db_connection()
+            user_data = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+            if user_data:
+                db_keys = ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_password', 'batch_size', 'delay_seconds']
+                for key in db_keys:
+                    if key in user_data and user_data[key] is not None:
+                         settings[key.upper()] = user_data[key]
+        finally:
+            if conn:
+                conn.close()
     
-    # Tenta carregar do ficheiro JSON apenas se a variável de ambiente não existir
-    # Isto mantém o funcionamento local
     if 'MERCADO_PAGO_ACCESS_TOKEN' not in settings:
         try:
             with open('settings.json', 'r') as f:
                 settings.update(json.load(f))
         except (FileNotFoundError, json.JSONDecodeError): pass
     
-    conn.close()
     return settings
 
 # --- Funções de processamento e envio ---
@@ -325,6 +312,7 @@ def login_required(f):
     return decorated_function
 
 def admin_required(f):
+    # (Esta função não precisa de correção, pois não acessa o BD)
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if session.get('role') != 'admin':
@@ -334,30 +322,34 @@ def admin_required(f):
     return decorated_function
 
 def feature_required(feature_slug):
-    """Decorator que verifica se o plano do usuário tem acesso a um recurso específico."""
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
             if 'user_id' not in session: return redirect(url_for('login_page'))
             conn = get_db_connection()
-            user = conn.execute("SELECT * FROM users WHERE id = ?", (session['user_id'],)).fetchone()
-            if user and user['role'] == 'admin':
+            try:
+                user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': session['user_id']}).mappings().fetchone()
+                if user and user['role'] == 'admin':
+                    return f(*args, **kwargs)
+                if not user or not user['plan_id']:
+                    flash("Você precisa de um plano para acessar este recurso.", "warning")
+                    return redirect(url_for('plans_page'))
+                if user['plan_expiration_date'] and user['plan_expiration_date'] < datetime.now().date():
+                    flash("Seu plano expirou. Renove para continuar.", "warning")
+                    return redirect(url_for('plans_page'))
+                
+                feature_access = conn.execute(
+                    text("SELECT 1 FROM plan_features pf JOIN features f ON pf.feature_id = f.id WHERE pf.plan_id = :plan_id AND f.slug = :slug"),
+                    {'plan_id': user['plan_id'], 'slug': feature_slug}
+                ).fetchone()
+                
+                if feature_access:
+                    return f(*args, **kwargs)
+                else:
+                    flash("Seu plano atual não dá acesso a este recurso. Considere fazer um upgrade!", "danger")
+                    return redirect(url_for('plans_page'))
+            finally:
                 conn.close()
-                return f(*args, **kwargs)
-            if not user or not user['plan_id']:
-                flash("Você precisa de um plano para acessar este recurso.", "warning")
-                conn.close()
-                return redirect(url_for('plans_page'))
-            if user['plan_expiration_date'] and datetime.strptime(user['plan_expiration_date'], '%Y-%m-%d') < datetime.now():
-                flash("Seu plano expirou. Renove para continuar.", "warning")
-                conn.close()
-                return redirect(url_for('plans_page'))
-            feature_access = conn.execute("SELECT 1 FROM plan_features pf JOIN features f ON pf.feature_id = f.id WHERE pf.plan_id = ? AND f.slug = ?", (user['plan_id'], feature_slug)).fetchone()
-            conn.close()
-            if feature_access: return f(*args, **kwargs)
-            else:
-                flash("Seu plano atual não dá acesso a este recurso. Considere fazer um upgrade!", "danger")
-                return redirect(url_for('plans_page'))
         return decorated_function
     return decorator
 
@@ -376,15 +368,18 @@ def login_page():
         email = request.form.get('email')
         password = request.form.get('password')
         conn = get_db_connection()
-        user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-        conn.close()
-        if user and check_password_hash(user['password_hash'], password):
-            session['logged_in'] = True
-            session['user_id'] = user['id']
-            session['user_email'] = user['email']
-            session['role'] = user['role']
-            return redirect(url_for('dashboard'))
-        flash("E-mail ou senha inválidos.", "danger")
+        try:
+            user = conn.execute(text("SELECT * FROM users WHERE email = :email"), {'email': email}).mappings().fetchone()
+            if user and check_password_hash(user['password_hash'], password):
+                session['logged_in'] = True
+                session['user_id'] = user['id']
+                session['user_email'] = user['email']
+                session['role'] = user['role']
+                return redirect(url_for('dashboard'))
+            else:
+                flash("E-mail ou senha inválidos.", "danger")
+        finally:
+            conn.close()
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -395,11 +390,14 @@ def register_page():
         conn = get_db_connection()
         try:
             password_hash = generate_password_hash(password)
-            conn.execute("INSERT INTO users (email, password_hash, role) VALUES (?, ?, 'user')", (email, password_hash))
+            conn.execute(
+                text("INSERT INTO users (email, password_hash, role) VALUES (:email, :ph, 'user')"),
+                {'email': email, 'ph': password_hash}
+            )
             conn.commit()
             flash("Conta criada com sucesso! Faça seu login.", "success")
             return redirect(url_for('login_page'))
-        except sqlite3.IntegrityError:
+        except sqlalchemy_exc.IntegrityError:
             flash("Este e-mail já está cadastrado.", "danger")
         finally:
             conn.close()
@@ -416,28 +414,36 @@ def logout():
 @login_required
 def dashboard():
     conn = get_db_connection()
-    user = conn.execute("SELECT * FROM users WHERE id = ?", (session['user_id'],)).fetchone()
-    plan_status = {'plan_name': 'Free', 'badge_class': 'warning', 'days_left': None}
-    enabled_features = set()
-    if user and user['role'] == 'admin':
-        all_features = conn.execute("SELECT slug FROM features").fetchall()
-        enabled_features = {row['slug'] for row in all_features}
-        plan_status = {'plan_name': 'Admin', 'badge_class': 'danger', 'days_left': 9999}
-    elif user and user['plan_id'] and user['plan_expiration_date']:
-        expiration_date = datetime.strptime(user['plan_expiration_date'], '%Y-%m-%d')
-        days_left = (expiration_date.date() - datetime.now().date()).days
-        plan = conn.execute("SELECT name FROM plans WHERE id = ?", (user['plan_id'],)).fetchone()
-        plan_name = plan['name'] if plan else 'Expirado'
-        if days_left >= 0:
-            plan_status = {'plan_name': plan_name, 'badge_class': 'success', 'days_left': days_left}
-            feature_rows = conn.execute("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = ?", (user['plan_id'],)).fetchall()
-            enabled_features = {row['slug'] for row in feature_rows}
-        else:
-            plan_status = {'plan_name': f"{plan_name} (Expirado)", 'badge_class': 'danger', 'days_left': days_left}
-    conn.close()
-    session['user_plan_status'] = plan_status
-    session['user_features'] = list(enabled_features)
-    return render_template('dashboard.html')
+    try:
+        user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': session['user_id']}).mappings().fetchone()
+        plan_status = {'plan_name': 'Free', 'badge_class': 'warning', 'days_left': None}
+        enabled_features = set()
+
+        if user and user['role'] == 'admin':
+            all_features = conn.execute(text("SELECT slug FROM features")).mappings().fetchall()
+            enabled_features = {row['slug'] for row in all_features}
+            plan_status = {'plan_name': 'Admin', 'badge_class': 'danger', 'days_left': 9999}
+        elif user and user.get('plan_id') and user.get('plan_expiration_date'):
+            expiration_date = user['plan_expiration_date']
+            days_left = (expiration_date - datetime.now().date()).days
+            plan = conn.execute(text("SELECT name FROM plans WHERE id = :plan_id"), {'plan_id': user['plan_id']}).mappings().fetchone()
+            plan_name = plan['name'] if plan else 'Expirado'
+            if days_left >= 0:
+                plan_status = {'plan_name': plan_name, 'badge_class': 'success', 'days_left': days_left}
+                feature_rows = conn.execute(
+                    text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"),
+                    {'plan_id': user['plan_id']}
+                ).mappings().fetchall()
+                enabled_features = {row['slug'] for row in feature_rows}
+            else:
+                plan_status = {'plan_name': f"{plan_name} (Expirado)", 'badge_class': 'danger', 'days_left': days_left}
+        
+        session['user_plan_status'] = plan_status
+        session['user_features'] = list(enabled_features)
+        return render_template('dashboard.html')
+    finally:
+        conn.close()
+
 
 # --- ROTAS DE ADMINISTRAÇÃO ---
 @app.route('/users', methods=['GET', 'POST'])
@@ -508,7 +514,7 @@ def delete_user(user_id):
         flash("Você não pode excluir sua própria conta.", "danger")
     else:
         conn = get_db_connection()
-        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.execute(text("DELETE FROM users WHERE id = :id"), {'id': user_id})
         conn.commit()
         conn.close()
         flash("Usuário excluído com sucesso.", "info")
