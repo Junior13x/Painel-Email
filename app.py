@@ -124,31 +124,18 @@ def feature_required(feature_slug):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            if 'user_id' not in session: return redirect(url_for('login_page'))
-            conn = None
-            try:
-                conn = get_db_connection()
-                user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': session['user_id']}).mappings().fetchone()
-                if not user:
-                    session.clear()
-                    return redirect(url_for('login_page'))
-                if user['role'] == 'admin': return f(*args, **kwargs)
-                if not user['plan_id']:
-                    flash("Você precisa de um plano para acessar este recurso.", "warning")
-                    return redirect(url_for('plans_page'))
-                if user['plan_expiration_date'] and user['plan_expiration_date'] < datetime.now().date():
-                    flash("Seu plano expirou. Renove para continuar.", "warning")
-                    return redirect(url_for('plans_page'))
-                feature_access = conn.execute(
-                    text("SELECT 1 FROM plan_features pf JOIN features f ON pf.feature_id = f.id WHERE pf.plan_id = :plan_id AND f.slug = :slug"),
-                    {'plan_id': user['plan_id'], 'slug': feature_slug}
-                ).fetchone()
-                if feature_access: return f(*args, **kwargs)
-                else:
-                    flash("Seu plano atual não dá acesso a este recurso.", "danger")
-                    return redirect(url_for('plans_page'))
-            finally:
-                if conn: conn.close()
+            # Acesso garantido se for admin
+            if session.get('role') == 'admin':
+                return f(*args, **kwargs)
+
+            # Busca as features do usuário (que já foram calculadas no context_processor)
+            user_features = session.get('user_features', [])
+            
+            if feature_slug in user_features:
+                return f(*args, **kwargs)
+            else:
+                flash("Seu plano atual não dá acesso a este recurso.", "danger")
+                return redirect(url_for('dashboard'))
         return decorated_function
     return decorator
 
@@ -166,6 +153,22 @@ def inject_user_info():
             session.clear()
             return {}
         
+        # --- Lógica de Features (Permissões) ---
+        enabled_features = set()
+        if user['role'] == 'admin':
+            all_features = conn.execute(text("SELECT slug FROM features")).mappings().fetchall()
+            enabled_features = {row['slug'] for row in all_features}
+        elif user.get('plan_id'):
+            is_expired = user.get('plan_expiration_date') and user['plan_expiration_date'] < datetime.now().date()
+            if not is_expired:
+                feature_rows = conn.execute(
+                    text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"),
+                    {'plan_id': user['plan_id']}
+                ).mappings().fetchall()
+                enabled_features = {row['slug'] for row in feature_rows}
+        session['user_features'] = list(enabled_features) # Salva na sessão
+
+        # --- Lógica de Status do Plano ---
         plan_status = {'plan_name': 'Grátis', 'badge_class': 'secondary', 'days_left': None}
         if user['role'] == 'admin':
             plan_status = {'plan_name': 'Admin', 'badge_class': 'danger', 'days_left': 9999}
@@ -179,6 +182,7 @@ def inject_user_info():
             else:
                 plan_status = {'plan_name': f"{plan_name} (Expirado)", 'badge_class': 'warning', 'days_left': days_left}
         
+        # --- Lógica de Limite de Envios ---
         sends_remaining = -1
         if user['role'] != 'admin':
             plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
@@ -188,7 +192,7 @@ def inject_user_info():
                 sends_today = user['sends_today']
             sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
 
-        return dict(user_plan_status=plan_status, sends_remaining=sends_remaining, is_admin=(user['role'] == 'admin'))
+        return dict(user_plan_status=plan_status, sends_remaining=sends_remaining, is_admin=(user['role'] == 'admin'), user_features=list(enabled_features))
     except Exception as e:
         print(f"Erro ao injetar dados do plano: {e}")
         return {}
@@ -378,41 +382,26 @@ def edit_user_page(user_id):
     try:
         conn = get_db_connection()
         if request.method == 'POST':
-            plan_id_str = request.form.get('plan_id')
-            validity_days_str = request.form.get('validity_days')
+            plan_id_str, validity_days_str = request.form.get('plan_id'), request.form.get('validity_days')
             with conn.begin():
                 if not plan_id_str or plan_id_str == 'free':
                     conn.execute(text("UPDATE users SET plan_id = NULL, plan_expiration_date = NULL WHERE id = :uid"), {'uid': user_id})
                     flash(f"Usuário ID {user_id} definido como Grátis.", "info")
                 else:
-                    try:
-                        plan_id = int(plan_id_str)
-                        validity_days = int(validity_days_str or 30)
-                        expiration_date = datetime.now() + timedelta(days=validity_days)
-                        
-                        conn.execute(text("UPDATE users SET plan_id = :pid, plan_expiration_date = :exp WHERE id = :uid"), 
-                                     {'pid': plan_id, 'exp': expiration_date.date(), 'uid': user_id})
-                        
-                        plan_name = conn.execute(text("SELECT name FROM plans WHERE id = :pid"), {'pid': plan_id}).scalar_one_or_none() or "desconhecido"
-                        flash(f"Sucesso! Usuário ID {user_id} atualizado para o plano '{plan_name}'.", "success")
-                    except (ValueError, TypeError) as e:
-                        flash(f"ERRO: Valor inválido recebido para o ID do plano: '{plan_id_str}'. A alteração não foi salva. Erro: {e}", "danger")
-                        raise
+                    validity_days = int(validity_days_str or 30)
+                    expiration_date = datetime.now() + timedelta(days=validity_days)
+                    conn.execute(text("UPDATE users SET plan_id = :pid, plan_expiration_date = :exp WHERE id = :uid"), {'pid': int(plan_id_str), 'exp': expiration_date.date(), 'uid': user_id})
+                    plan_name = conn.execute(text("SELECT name FROM plans WHERE id = :pid"), {'pid': int(plan_id_str)}).scalar_one_or_none() or "desconhecido"
+                    flash(f"Usuário ID {user_id} atualizado para o plano '{plan_name}'!", "success")
             return redirect(url_for('users_page'))
-
-        # GET request logic
         user = conn.execute(text("SELECT * FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
         all_plans = conn.execute(text("SELECT * FROM plans WHERE is_active = TRUE")).mappings().fetchall()
         if not user:
             flash("Usuário não encontrado.", "warning")
             return redirect(url_for('users_page'))
         return render_template('edit_user.html', user=user, all_plans=all_plans)
-    except Exception as e:
-        flash(f"Ocorreu um erro inesperado: {e}", "danger")
-        return redirect(url_for('users_page'))
     finally:
         if conn: conn.close()
-
 
 @app.route('/users/delete/<int:user_id>', methods=['POST'])
 @login_required
@@ -962,4 +951,3 @@ print("Disparando greenlet para o background worker...")
 gevent.spawn(start_background_worker)
 
 # O Gunicorn assume o controle a partir daqui. Não use app.run()
-" from the immersive document. I will provide a fix for this error.I have selected "# ===============================================================
