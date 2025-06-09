@@ -608,6 +608,63 @@ def templates_page():
     finally:
         if conn: conn.close()
 
+# ROTA ADICIONADA PARA CORRIGIR O ERRO
+@app.route('/agendamento', methods=['GET', 'POST'])
+@login_required
+@feature_required('schedules')
+def schedule_page():
+    conn, user_id = None, session['user_id']
+    try:
+        conn = get_db_connection()
+        if request.method == 'POST':
+            subject = request.form.get('subject')
+            body = request.form.get('body')
+            send_at_str = request.form.get('send_at')
+            
+            if not all([subject, body, send_at_str]):
+                flash("Assunto, corpo e data são obrigatórios para agendar.", "warning")
+            else:
+                # O formato do input datetime-local é 'YYYY-MM-DDTHH:MM'
+                send_at_dt = datetime.strptime(send_at_str, '%Y-%m-%dT%H:%M')
+                with conn.begin():
+                    conn.execute(
+                        text("INSERT INTO scheduled_emails (user_id, schedule_type, subject, body, send_at) VALUES (:uid, 'manual', :s, :b, :sa)"),
+                        {'uid': user_id, 's': subject, 'b': body, 'sa': send_at_dt}
+                    )
+                flash("E-mail agendado com sucesso!", "success")
+            return redirect(url_for('schedule_page'))
+
+        # GET
+        pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE ORDER BY send_at ASC"), {'uid': user_id}).mappings().fetchall()
+        return render_template('agendamento.html', pending_emails=pending_emails)
+    except Exception as e:
+        print(f"Erro na página de agendamentos: {e}")
+        flash("Ocorreu um erro ao carregar os agendamentos.", "danger")
+        return redirect(url_for('dashboard'))
+    finally:
+        if conn: conn.close()
+
+@app.route('/agendamento/delete/<int:email_id>', methods=['POST'])
+@login_required
+@feature_required('schedules')
+def delete_schedule(email_id):
+    conn, user_id = None, session['user_id']
+    try:
+        conn = get_db_connection()
+        with conn.begin():
+            # Garante que o usuário só pode deletar seus próprios agendamentos
+            result = conn.execute(text("DELETE FROM scheduled_emails WHERE id = :eid AND user_id = :uid"), {'eid': email_id, 'uid': user_id})
+            if result.rowcount > 0:
+                flash("Agendamento excluído com sucesso.", "info")
+            else:
+                flash("Agendamento não encontrado ou você não tem permissão para excluí-lo.", "danger")
+    except Exception as e:
+        print(f"Erro ao excluir agendamento: {e}")
+        flash("Não foi possível excluir o agendamento.", "danger")
+    finally:
+        if conn: conn.close()
+    return redirect(url_for('schedule_page'))
+
 
 # ===============================================================
 # == LÓGICA DO WORKER (ROBÔ) INTEGRADO ==
