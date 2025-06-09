@@ -378,26 +378,18 @@ def edit_user_page(user_id):
     try:
         conn = get_db_connection()
         if request.method == 'POST':
-            # --- DEBUGGING ---
-            print("--- INICIANDO EDIÇÃO DE USUÁRIO (POST) ---")
-            print(f"Formulário recebido: {request.form}")
             plan_id_str = request.form.get('plan_id')
-            print(f"Valor extraído para 'plan_id': '{plan_id_str}' (Tipo: {type(plan_id_str)})")
-            # --- FIM DO DEBUGGING ---
-
+            validity_days_str = request.form.get('validity_days')
             with conn.begin():
                 if not plan_id_str or plan_id_str == 'free':
-                    print(f"DEBUG: Condição para plano GRÁTIS atendida. Atualizando usuário {user_id} para NULL.")
                     conn.execute(text("UPDATE users SET plan_id = NULL, plan_expiration_date = NULL WHERE id = :uid"), {'uid': user_id})
                     flash(f"Usuário ID {user_id} definido como Grátis.", "info")
                 else:
                     try:
                         plan_id = int(plan_id_str)
-                        validity_days_str = request.form.get('validity_days')
                         validity_days = int(validity_days_str or 30)
                         expiration_date = datetime.now() + timedelta(days=validity_days)
                         
-                        print(f"DEBUG: Condição para plano PAGO atendida. Atualizando usuário {user_id} para plan_id={plan_id}.")
                         conn.execute(text("UPDATE users SET plan_id = :pid, plan_expiration_date = :exp WHERE id = :uid"), 
                                      {'pid': plan_id, 'exp': expiration_date.date(), 'uid': user_id})
                         
@@ -406,7 +398,6 @@ def edit_user_page(user_id):
                     except (ValueError, TypeError) as e:
                         flash(f"ERRO: Valor inválido recebido para o ID do plano: '{plan_id_str}'. A alteração não foi salva. Erro: {e}", "danger")
                         raise
-
             return redirect(url_for('users_page'))
 
         # GET request logic
@@ -971,3 +962,4 @@ print("Disparando greenlet para o background worker...")
 gevent.spawn(start_background_worker)
 
 # O Gunicorn assume o controle a partir daqui. Não use app.run()
+" from the immersive document. I will provide a fix for this error.I have selected "# ===============================================================

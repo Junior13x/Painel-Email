@@ -1,57 +1,54 @@
 {% extends "base.html" %}
 
-{% block title %}Editar Usuário{% endblock %}
+{% block title %}Editar Usuário - {{ user.email }}{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center">
-    <h1>Editar Usuário</h1>
-    <a href="{{ url_for('users_page') }}" class="btn btn-outline-secondary">Voltar para a Lista</a>
-</div>
-<p>Modifique as informações do usuário <strong>{{ user.email }}</strong> (ID: {{ user.id }}).</p>
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8 col-lg-6">
+            <div class="card shadow-sm">
+                <div class="card-header bg-primary text-white">
+                    <h2 class="h4 mb-0">Editar Usuário: <span class="fw-light">{{ user.email }}</span></h2>
+                </div>
+                <div class="card-body">
+                    <p><strong>ID do Usuário:</strong> {{ user.id }}</p>
+                    <p><strong>Nível de Acesso:</strong> <span class="badge bg-secondary">{{ user.role }}</span></p>
+                    
+                    <hr>
 
-<hr>
+                    <form action="{{ url_for('edit_user_page', user_id=user.id) }}" method="POST">
+                        <div class="mb-3">
+                            <label for="plan_id" class="form-label fw-bold">Plano Atual</label>
+                            <!-- A CORREÇÃO ESTÁ AQUI: O 'name' deve ser "plan_id" -->
+                            <select class="form-select" id="plan_id" name="plan_id">
+                                <option value="free" {% if not user.plan_id %}selected{% endif %}>-- Grátis (Sem Plano) --</option>
+                                {% for plan in all_plans %}
+                                    <option value="{{ plan.id }}" {% if user.plan_id == plan.id %}selected{% endif %}>
+                                        {{ plan.name }} (R$ {{ "%.2f"|format(plan.price|float) }})
+                                    </option>
+                                {% endfor %}
+                            </select>
+                            <div class="form-text">
+                                Selecione o plano que deseja atribuir a este usuário.
+                            </div>
+                        </div>
 
-<form method="POST">
-    <div class="card">
-        <div class="card-body">
-            <h5 class="card-title">Detalhes da Assinatura</h5>
+                        <div class="mb-3">
+                            <label for="validity_days" class="form-label">Adicionar Dias de Validade</label>
+                            <input type="number" class="form-control" id="validity_days" name="validity_days" value="30" placeholder="Ex: 30">
+                            <div class="form-text">
+                                Se um plano for selecionado, esses dias serão somados à data atual para definir a nova data de expiração.
+                            </div>
+                        </div>
 
-            <div class="mb-3">
-                <label for="plan" class="form-label">Plano</label>
-                <select class="form-select" id="plan" name="plan">
-                    <option value="free" {% if user.plan == 'free' %}selected{% endif %}>Free</option>
-                    <option value="vip" {% if user.plan == 'vip' %}selected{% endif %}>VIP</option>
-                </select>
-            </div>
-
-            <div class="mb-3">
-                <label for="validity_days" class="form-label">Dias de Validade do VIP</label>
-                <input type="number" class="form-control" id="validity_days" name="validity_days" value="{{ user.plan_validity_days or 30 }}">
-                <div class="form-text">
-                    Define quantos dias de VIP o usuário terá a partir de hoje. Se o plano for alterado para 'Free', este valor será ignorado.
+                        <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-4">
+                             <a href="{{ url_for('users_page') }}" class="btn btn-secondary me-md-2">Cancelar</a>
+                            <button type="submit" class="btn btn-primary">Salvar Alterações</button>
+                        </div>
+                    </form>
                 </div>
             </div>
-
-            <button type="submit" class="btn btn-primary">Salvar Alterações</button>
         </div>
     </div>
-</form>
-
-<script>
-    // Script opcional para mostrar/ocultar o campo de dias
-    const planSelect = document.getElementById('plan');
-    const validityField = document.getElementById('validity_days').parentElement;
-
-    function toggleValidityField() {
-        if (planSelect.value === 'free') {
-            validityField.style.display = 'none';
-        } else {
-            validityField.style.display = 'block';
-        }
-    }
-
-    // Executa na carga da página e quando o select muda
-    toggleValidityField();
-    planSelect.addEventListener('change', toggleValidityField);
-</script>
+</div>
 {% endblock %}
