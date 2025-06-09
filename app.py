@@ -597,41 +597,37 @@ def mass_send_page():
 @login_required
 def settings_page():
     user_id = session['user_id']
+    is_admin = session.get('role') == 'admin'
     conn = None
     try:
         conn = get_db_connection()
         if request.method == 'POST':
-            with conn.begin():
-                # Lógica para salvar as configurações de automação como JSON
-                automations = {
-                    'welcome': {'enabled': 'welcome_enabled' in request.form, 'subject': request.form.get('welcome_subject'), 'body': request.form.get('welcome_body')},
-                    'expiry': {
-                        'enabled': 'expiry_enabled' in request.form,
-                        'subject_7_days': request.form.get('expiry_7_days_subject'), 'body_7_days': request.form.get('expiry_7_days_body'),
-                        'subject_3_days': request.form.get('expiry_3_days_subject'), 'body_3_days': request.form.get('expiry_3_days_body'),
-                        'subject_1_day': request.form.get('expiry_1_day_subject'), 'body_1_day': request.form.get('expiry_1_day_body')
-                    }
+            # Lógica para salvar as configurações de automação como JSON
+            automations = {
+                'welcome': {'enabled': 'welcome_enabled' in request.form, 'subject': request.form.get('welcome_subject'), 'body': request.form.get('welcome_body')},
+                'expiry': {
+                    'enabled': 'expiry_enabled' in request.form,
+                    'subject_7_days': request.form.get('expiry_7_days_subject'), 'body_7_days': request.form.get('expiry_7_days_body'),
+                    'subject_3_days': request.form.get('expiry_3_days_subject'), 'body_3_days': request.form.get('expiry_3_days_body'),
+                    'subject_1_day': request.form.get('expiry_1_day_subject'), 'body_1_day': request.form.get('expiry_1_day_body')
                 }
-                
-                update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user']}
-                update_fields.update({
-                    'smtp_port': int(request.form.get('smtp_port') or 587),
-                    'batch_size': int(request.form.get('batch_size') or 15),
-                    'delay_seconds': int(request.form.get('delay_seconds') or 60),
-                    'automations_config': json.dumps(automations) # Converte o dicionário para string JSON
-                })
+            }
+            
+            update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user']}
+            update_fields.update({
+                'smtp_port': int(request.form.get('smtp_port') or 587),
+                'batch_size': int(request.form.get('batch_size') or 15),
+                'delay_seconds': int(request.form.get('delay_seconds') or 60),
+                'automations_config': json.dumps(automations) # Converte o dicionário para string JSON
+            })
 
-                set_clauses = [f"{key} = :{key}" for key in update_fields]
-                if request.form.get('smtp_password'):
-                    set_clauses.append("smtp_password = :smtp_password")
-                    update_fields['smtp_password'] = request.form.get('smtp_password')
-                
-                # Correção: id do usuário deve ser passado como parâmetro
-                update_fields['user_id'] = user_id
-                set_clauses_str = ", ".join(set_clauses)
-                query = text(f"UPDATE users SET {set_clauses_str} WHERE id = :user_id")
-                
-                conn.execute(query, update_fields)
+            set_clauses = [f"{key} = :{key}" for key in update_fields]
+            if request.form.get('smtp_password'):
+                set_clauses.append("smtp_password = :smtp_password")
+                update_fields['smtp_password'] = request.form.get('smtp_password')
+            
+            with conn.begin():
+                conn.execute(text(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = :user_id"), {**update_fields, 'user_id': user_id})
 
             flash("Configurações salvas!", "success")
             return redirect(url_for('settings_page'))
@@ -644,18 +640,21 @@ def settings_page():
             user_settings['automations_config'] = json.loads(user_settings['automations_config'])
         else:
             user_settings['automations_config'] = {}
+        
+        global_settings = {}
+        if is_admin:
+            global_settings['MERCADO_PAGO_ACCESS_TOKEN'] = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', '')
 
-        return render_template('settings.html', user_settings=user_settings)
+        return render_template('settings.html', user_settings=user_settings, global_settings=global_settings)
     
     except Exception as e:
         flash(f"Erro ao salvar/carregar configurações: {e}", "danger")
-        # Mesmo com erro, tenta renderizar a página com o que for possível
-        user_settings = {} # Evita outro erro no template
-        return render_template('settings.html', user_settings=user_settings)
+        user_settings = {}
+        global_settings = {}
+        return render_template('settings.html', user_settings=user_settings, global_settings=global_settings)
     
     finally:
         if conn: conn.close()
-
 
 @app.route('/history')
 @login_required
