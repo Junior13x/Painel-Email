@@ -50,8 +50,7 @@ def init_db_command():
     conn = None
     try:
         conn = get_db_connection()
-        # Transações garantem que ou tudo funciona ou nada é salvo.
-        with conn.begin():
+        with conn.begin(): # Transações garantem que ou tudo funciona ou nada é salvo.
             print("Conectado ao banco de dados. Iniciando a criação das tabelas...")
             conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates CASCADE;"))
             print("Tabelas antigas removidas (se existiam).")
@@ -60,7 +59,7 @@ def init_db_command():
             conn.execute(text("""
                 CREATE TABLE users (
                     id SERIAL PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL DEFAULT 'user', plan_id INTEGER, plan_expiration_date DATE,
+                    role TEXT NOT NULL DEFAULT 'user', plan_id INTEGER REFERENCES plans(id), plan_expiration_date DATE,
                     baserow_host TEXT, baserow_api_key TEXT, baserow_table_id TEXT,
                     smtp_host TEXT, smtp_port INTEGER, smtp_user TEXT, smtp_password TEXT,
                     batch_size INTEGER, delay_seconds INTEGER, automations_config TEXT,
@@ -75,18 +74,13 @@ def init_db_command():
             conn.execute(text("CREATE TABLE email_templates (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), name TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(user_id, name));"))
             print("Tabelas criadas com sucesso.")
 
-            # --- Inserção de Dados Iniciais ---
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Agendamentos', 'schedules', 'Permite agendar envios de e-mail para o futuro.');"))
             print("Features iniciais inseridas.")
 
-            # --- Criação do Admin Padrão ---
             default_email = 'junior@admin.com'
             default_pass = '130896'
             password_hash = generate_password_hash(default_pass)
-            conn.execute(
-                text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"),
-                {'email': default_email, 'password_hash': password_hash}
-            )
+            conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"), {'email': default_email, 'password_hash': password_hash})
             print(f"ADMIN PADRÃO CRIADO! E-mail: {default_email} | Senha: {default_pass}")
         
         print("\nBanco de dados inicializado com sucesso!")
@@ -101,7 +95,6 @@ def init_db_command():
 # ===============================================================
 # == DECORATORS (AUTENTICAÇÃO E PERMISSÕES) ==
 # ===============================================================
-# (As funções de decorator continuam as mesmas)
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -132,8 +125,7 @@ def feature_required(feature_slug):
                 if not user:
                     session.clear()
                     return redirect(url_for('login_page'))
-                if user['role'] == 'admin':
-                    return f(*args, **kwargs)
+                if user['role'] == 'admin': return f(*args, **kwargs)
                 if not user['plan_id']:
                     flash("Você precisa de um plano para acessar este recurso.", "warning")
                     return redirect(url_for('plans_page'))
@@ -144,10 +136,9 @@ def feature_required(feature_slug):
                     text("SELECT 1 FROM plan_features pf JOIN features f ON pf.feature_id = f.id WHERE pf.plan_id = :plan_id AND f.slug = :slug"),
                     {'plan_id': user['plan_id'], 'slug': feature_slug}
                 ).fetchone()
-                if feature_access:
-                    return f(*args, **kwargs)
+                if feature_access: return f(*args, **kwargs)
                 else:
-                    flash("Seu plano atual não dá acesso a este recurso. Considere fazer um upgrade!", "danger")
+                    flash("Seu plano atual não dá acesso a este recurso.", "danger")
                     return redirect(url_for('plans_page'))
             finally:
                 if conn: conn.close()
@@ -157,10 +148,8 @@ def feature_required(feature_slug):
 # ===============================================================
 # == FUNÇÕES DE LÓGICA (HELPERS) ==
 # ===============================================================
-# (As funções de helpers continuam as mesmas, com pequenas melhorias)
 @app.context_processor
-def inject_user_plan_info():
-    """Injeta informações do plano do usuário em todos os templates."""
+def inject_user_info():
     if 'user_id' not in session: return {}
     conn = None
     try:
@@ -169,6 +158,8 @@ def inject_user_plan_info():
         if not user:
             session.clear()
             return {}
+        
+        # Status do Plano
         plan_status = {'plan_name': 'Grátis', 'badge_class': 'secondary', 'days_left': None}
         if user['role'] == 'admin':
             plan_status = {'plan_name': 'Admin', 'badge_class': 'danger', 'days_left': 9999}
@@ -181,7 +172,18 @@ def inject_user_plan_info():
                 plan_status = {'plan_name': plan_name, 'badge_class': 'success', 'days_left': days_left}
             else:
                 plan_status = {'plan_name': f"{plan_name} (Expirado)", 'badge_class': 'warning', 'days_left': days_left}
-        return dict(user_plan_status=plan_status)
+        
+        # Limite de Envios
+        sends_remaining = -1 # Ilimitado por padrão (para admin)
+        if user['role'] != 'admin':
+            plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
+            daily_limit = plan['daily_send_limit'] if plan else 25 # Padrão para plano grátis
+            sends_today = 0
+            if user['last_send_date'] and user['last_send_date'] == datetime.now().date():
+                sends_today = user['sends_today']
+            sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
+
+        return dict(user_plan_status=plan_status, sends_remaining=sends_remaining)
     except Exception as e:
         print(f"Erro ao injetar dados do plano: {e}")
         return {}
@@ -197,7 +199,6 @@ def load_user_settings(user_id):
     finally:
         if conn: conn.close()
 
-# ... (outras funções helper como parse_date_string, process_contacts_status, etc. aqui)
 def parse_date_string(date_string):
     if not date_string: return None
     for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%Y/%m/%d']:
@@ -257,7 +258,7 @@ def send_emails_in_batches(recipients, subject, body, settings, user_id):
     conn = None
     try:
         conn = get_db_connection()
-        with conn.begin(): # Usa transação
+        with conn.begin():
             for i in range(0, len(recipients), batch_size):
                 batch = recipients[i:i + batch_size]
                 for recipient in batch:
@@ -276,13 +277,12 @@ def send_emails_in_batches(recipients, subject, body, settings, user_id):
                     except Exception as e:
                         fail_count += 1
                         print(f"FALHA ao enviar para {recipient_email}: {e}")
-                if i + batch_size < len(recipients): time.sleep(delay_seconds)
+                if i + batch_size < len(recipients): gevent.sleep(delay_seconds)
     except Exception as e:
         print(f"Erro crítico no envio em lote: {e}")
     finally:
         if conn: conn.close()
     return sent_count, fail_count
-
 
 # ===============================================================
 # == ROTAS DA APLICAÇÃO ==
@@ -516,21 +516,51 @@ def mp_webhook():
 def mass_send_page():
     user_id = session['user_id']
     settings = load_user_settings(user_id)
+    limit_info = inject_user_info() # Pega informações do context processor
+    sends_remaining = limit_info.get('sends_remaining', 0)
+
     if request.method == 'POST':
         if not all(settings.get(k) for k in ['smtp_host', 'smtp_user', 'smtp_password']):
             flash("Configurações de SMTP incompletas.", "danger")
             return redirect(url_for('settings_page'))
-        subject, body = request.form.get('subject'), request.form.get('body')
+        
         try:
-            recipients = process_contacts_status(get_all_contacts_from_baserow(settings))
-            if not recipients:
-                flash("Nenhum destinatário para o envio.", "warning")
+            all_contacts = process_contacts_status(get_all_contacts_from_baserow(settings))
+            bulk_action = request.form.get('bulk_action')
+            recipients = []
+            if bulk_action and bulk_action != 'manual':
+                if bulk_action == 'all': recipients = all_contacts
+                else: recipients = [c for c in all_contacts if c.get('status_badge_class') == bulk_action]
             else:
-                sent, failed = send_emails_in_batches(recipients, subject, body, settings, user_id)
-                flash(f"Envio concluído: {sent} e-mails com sucesso, {failed} falhas.", "info")
+                selected_ids = request.form.getlist('selected_contacts')
+                recipients = [c for c in all_contacts if str(c.get('id')) in selected_ids]
+
+            if not recipients:
+                flash("Nenhum destinatário selecionado.", "warning")
+                return redirect(url_for('mass_send_page'))
+            
+            if sends_remaining != -1 and len(recipients) > sends_remaining:
+                flash(f"Envio bloqueado. Você tentou enviar para {len(recipients)} contatos, mas só tem {sends_remaining} envios restantes hoje.", "danger")
+                return redirect(url_for('mass_send_page'))
+
+            subject, body = request.form.get('subject'), request.form.get('body')
+            sent, failed = send_emails_in_batches(recipients, subject, body, settings, user_id)
+            
+            # Atualiza o contador de envios
+            if sends_remaining != -1 and sent > 0:
+                conn = get_db_connection()
+                with conn.begin():
+                    today_str = datetime.now().date()
+                    current_user = conn.execute(text("SELECT sends_today, last_send_date FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
+                    sends_today = current_user['sends_today'] if current_user['last_send_date'] == today_str else 0
+                    conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': today_str, 'uid': user_id})
+                conn.close()
+
+            flash(f"Envio concluído: {sent} e-mails com sucesso, {failed} falhas.", "info")
             return redirect(url_for('history_page'))
         except Exception as e:
-            flash(f"Erro ao buscar contatos: {e}", "danger")
+            flash(f"Erro ao processar envio: {e}", "danger")
+
     # GET
     contacts, error_message, templates = [], None, []
     conn = None
@@ -543,7 +573,8 @@ def mass_send_page():
         error_message = f"Não foi possível carregar dados: {e}"
     finally:
         if conn: conn.close()
-    return render_template('envio-em-massa.html', contacts=contacts, error=error_message, templates=templates)
+    return render_template('envio_em_massa.html', contacts=contacts, error=error_message, templates=templates)
+
 
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
@@ -552,27 +583,28 @@ def settings_page():
     try:
         conn = get_db_connection()
         if request.method == 'POST':
-            update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user']}
-            update_fields.update({
-                'smtp_port': int(request.form.get('smtp_port') or 587),
-                'batch_size': int(request.form.get('batch_size') or 15),
-                'delay_seconds': int(request.form.get('delay_seconds') or 60)
-            })
-            set_clauses = [f"{key} = :{key}" for key in update_fields]
-            if request.form.get('smtp_password'):
-                set_clauses.append("smtp_password = :smtp_password")
-                update_fields['smtp_password'] = request.form.get('smtp_password')
             with conn.begin():
+                update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user', 'automations_config']}
+                update_fields.update({
+                    'smtp_port': int(request.form.get('smtp_port') or 587),
+                    'batch_size': int(request.form.get('batch_size') or 15),
+                    'delay_seconds': int(request.form.get('delay_seconds') or 60)
+                })
+                set_clauses = [f"{key} = :{key}" for key in update_fields]
+                if request.form.get('smtp_password'):
+                    set_clauses.append("smtp_password = :smtp_password")
+                    update_fields['smtp_password'] = request.form.get('smtp_password')
+                
                 conn.execute(text(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = {user_id}"), update_fields)
             flash("Configurações salvas!", "success")
-            return redirect(url_for('settings_page'))
+        
         user_settings = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()
         return render_template('settings.html', user_settings=user_settings)
     except Exception as e:
         flash(f"Erro ao salvar: {e}", "danger")
+        return redirect(url_for('settings_page'))
     finally:
         if conn: conn.close()
-    return redirect(url_for('settings_page'))
 
 @app.route('/history')
 @login_required
@@ -584,6 +616,36 @@ def history_page():
         return render_template('history.html', history=history)
     finally:
         if conn: conn.close()
+
+@app.route('/history/resend', methods=['POST'])
+@login_required
+def resend_from_history():
+    session['resend_subject'] = request.form.get('subject')
+    session['resend_body'] = request.form.get('body')
+    flash('Conteúdo carregado para reenvio.', 'info')
+    return redirect(url_for('mass_send_page'))
+
+@app.route('/history/save-as-template', methods=['POST'])
+@login_required
+def save_history_as_template():
+    template_name, subject, body, user_id = request.form.get('template_name'), request.form.get('subject'), request.form.get('body'), session['user_id']
+    if not all([template_name, subject, body]):
+        flash("Nome, assunto e corpo são necessários.", "warning")
+    else:
+        conn = None
+        try:
+            conn = get_db_connection()
+            with conn.begin():
+                conn.execute(text("INSERT INTO email_templates (user_id, name, subject, body) VALUES (:uid, :n, :s, :b)"), {'uid': user_id, 'n': template_name, 's': subject, 'b': body})
+            flash(f'Salvo como modelo "{template_name}"!', 'success')
+        except sqlalchemy_exc.IntegrityError:
+            flash(f'Um modelo com o nome "{template_name}" já existe.', 'danger')
+        except Exception as e:
+            flash(f'Erro ao salvar modelo: {e}', 'danger')
+        finally:
+            if conn: conn.close()
+    return redirect(url_for('history_page'))
+
 
 @app.route('/templates', methods=['GET', 'POST'])
 @login_required
@@ -608,7 +670,7 @@ def templates_page():
     finally:
         if conn: conn.close()
 
-# ROTA ADICIONADA PARA CORRIGIR O ERRO
+
 @app.route('/agendamento', methods=['GET', 'POST'])
 @login_required
 @feature_required('schedules')
@@ -617,32 +679,40 @@ def schedule_page():
     try:
         conn = get_db_connection()
         if request.method == 'POST':
-            subject = request.form.get('subject')
-            body = request.form.get('body')
-            send_at_str = request.form.get('send_at')
+            subject, body, send_at_str = request.form.get('subject'), request.form.get('body'), request.form.get('send_at')
+            schedule_type, status_target, manual_recipients = request.form.get('schedule_type'), None, None
             
-            if not all([subject, body, send_at_str]):
-                flash("Assunto, corpo e data são obrigatórios para agendar.", "warning")
+            if schedule_type == 'group':
+                status_target = request.form.get('status_target')
+            elif schedule_type == 'manual':
+                emails = [email.strip() for email in re.split(r'[,\s]+', request.form.get('manual_emails', '')) if email.strip()]
+                if not emails:
+                    flash("Insira ao menos um e-mail válido para agendamento manual.", "warning")
+                    return redirect(url_for('schedule_page'))
+                manual_recipients = ','.join(emails)
+
+            if not all([subject, body, send_at_str, schedule_type]):
+                flash("Todos os campos são obrigatórios para agendar.", "warning")
             else:
-                # O formato do input datetime-local é 'YYYY-MM-DDTHH:MM'
                 send_at_dt = datetime.strptime(send_at_str, '%Y-%m-%dT%H:%M')
                 with conn.begin():
                     conn.execute(
-                        text("INSERT INTO scheduled_emails (user_id, schedule_type, subject, body, send_at) VALUES (:uid, 'manual', :s, :b, :sa)"),
-                        {'uid': user_id, 's': subject, 'b': body, 'sa': send_at_dt}
+                        text("""INSERT INTO scheduled_emails (user_id, schedule_type, status_target, manual_recipients, subject, body, send_at) 
+                                VALUES (:uid, :st, :stat, :mr, :sub, :body, :sa)"""),
+                        {'uid': user_id, 'st': schedule_type, 'stat': status_target, 'mr': manual_recipients, 'sub': subject, 'body': body, 'sa': send_at_dt}
                     )
                 flash("E-mail agendado com sucesso!", "success")
             return redirect(url_for('schedule_page'))
 
-        # GET
         pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE ORDER BY send_at ASC"), {'uid': user_id}).mappings().fetchall()
-        return render_template('agendamento.html', pending_emails=pending_emails)
+        return render_template('agendamento.html', pending_emails=pending_emails, schedule_data=None)
     except Exception as e:
         print(f"Erro na página de agendamentos: {e}")
-        flash("Ocorreu um erro ao carregar os agendamentos.", "danger")
+        flash("Ocorreu um erro ao processar seu pedido.", "danger")
         return redirect(url_for('dashboard'))
     finally:
         if conn: conn.close()
+
 
 @app.route('/agendamento/delete/<int:email_id>', methods=['POST'])
 @login_required
@@ -652,12 +722,9 @@ def delete_schedule(email_id):
     try:
         conn = get_db_connection()
         with conn.begin():
-            # Garante que o usuário só pode deletar seus próprios agendamentos
             result = conn.execute(text("DELETE FROM scheduled_emails WHERE id = :eid AND user_id = :uid"), {'eid': email_id, 'uid': user_id})
-            if result.rowcount > 0:
-                flash("Agendamento excluído com sucesso.", "info")
-            else:
-                flash("Agendamento não encontrado ou você não tem permissão para excluí-lo.", "danger")
+            if result.rowcount > 0: flash("Agendamento excluído.", "info")
+            else: flash("Agendamento não encontrado ou sem permissão.", "danger")
     except Exception as e:
         print(f"Erro ao excluir agendamento: {e}")
         flash("Não foi possível excluir o agendamento.", "danger")
@@ -665,13 +732,109 @@ def delete_schedule(email_id):
         if conn: conn.close()
     return redirect(url_for('schedule_page'))
 
+@app.route('/automations', methods=['GET', 'POST'])
+@login_required
+@feature_required('schedules')
+def automations_page():
+    user_id = session['user_id']
+    conn = None
+    try:
+        conn = get_db_connection()
+        if request.method == 'POST':
+            automations = {
+                'welcome': {
+                    'enabled': 'welcome_enabled' in request.form,
+                    'subject': request.form.get('welcome_subject', ''),
+                    'body': request.form.get('welcome_body', '')
+                },
+                'expiry': {
+                    'enabled': 'expiry_enabled' in request.form,
+                    'subject_7_days': request.form.get('expiry_7_days_subject', ''),
+                    'body_7_days': request.form.get('expiry_7_days_body', ''),
+                    'subject_3_days': request.form.get('expiry_3_days_subject', ''),
+                    'body_3_days': request.form.get('expiry_3_days_body', ''),
+                    'subject_1_day': request.form.get('expiry_1_day_subject', ''),
+                    'body_1_day': request.form.get('expiry_1_day_body', '')
+                }
+            }
+            with conn.begin():
+                conn.execute(text("UPDATE users SET automations_config = :config WHERE id = :uid"), {'config': json.dumps(automations), 'uid': user_id})
+            flash('Configurações de automação salvas!', 'success')
+            return redirect(url_for('automations_page'))
+        
+        user = conn.execute(text("SELECT automations_config FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
+        automations_data = json.loads(user['automations_config']) if user and user['automations_config'] else {}
+        return render_template('automations.html', automations=automations_data)
+    except Exception as e:
+        print(f"Erro na página de automações: {e}")
+        flash("Ocorreu um erro ao carregar as automações.", "danger")
+        return redirect(url_for('dashboard'))
+    finally:
+        if conn: conn.close()
+
 
 # ===============================================================
 # == LÓGICA DO WORKER (ROBÔ) INTEGRADO ==
 # ===============================================================
 
+def worker_process_pending_schedules(user_settings, all_contacts_processed, conn):
+    """Processa e-mails da fila de agendamento para um usuário específico."""
+    user_id = user_settings['id']
+    pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= :now"), {'uid': user_id, 'now': datetime.now()}).mappings().fetchall()
+    if not pending_emails: return
+
+    print(f"-> [Usuário: {user_settings['email']}] Encontrados {len(pending_emails)} agendamento(s) para processar.")
+    for email_job in pending_emails:
+        recipients = []
+        if email_job['schedule_type'] == 'group':
+            target = email_job['status_target']
+            if target == 'all': recipients = all_contacts_processed
+            else: recipients = [c for c in all_contacts_processed if c['status_badge_class'] == target]
+        elif email_job['schedule_type'] == 'manual' and email_job['manual_recipients']:
+            recipients = [{'Email': email.strip()} for email in email_job['manual_recipients'].split(',')]
+        
+        if recipients:
+            print(f"--> Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
+            sent, failed = send_emails_in_batches(recipients, email_job['subject'], email_job['body'], user_settings, user_id)
+            if failed == 0:
+                conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
+                print(f"--> Agendamento ID {email_job['id']} concluído e marcado como enviado.")
+        else:
+            conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']}) # Marca como enviado mesmo sem destinatários para não rodar de novo
+            print(f"--> Agendamento ID {email_job['id']} não tinha destinatários e foi marcado como enviado.")
+
+def worker_check_and_run_automations(user_settings, all_contacts_processed, conn):
+    """Verifica e executa as automações para um usuário específico."""
+    user_id = user_settings['id']
+    automations = json.loads(user_settings.get('automations_config') or '{}')
+    
+    # Automação de Boas-vindas
+    welcome_config = automations.get('welcome', {})
+    if welcome_config.get('enabled'):
+        subject, body = welcome_config.get('subject'), welcome_config.get('body')
+        if subject and body:
+            new_contacts = [c for c in all_contacts_processed if c.get("Data") and (datetime.now() - parse_date_string(c["Data"])).days < 1]
+            for contact in new_contacts:
+                already_sent = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
+                if not already_sent:
+                    print(f"--> Enviando boas-vindas para {contact.get('Email')}")
+                    send_emails_in_batches([contact], subject, body, user_settings, user_id)
+
+    # Automação de Expiração
+    expiry_config = automations.get('expiry', {})
+    if expiry_config.get('enabled'):
+        for days_left in [7, 3, 1]:
+            subject, body = expiry_config.get(f'subject_{days_left}_days'), expiry_config.get(f'body_{days_left}_days')
+            if subject and body:
+                expiring_contacts = [c for c in all_contacts_processed if c.get('remaining_days_int') == days_left]
+                for contact in expiring_contacts:
+                    already_sent_today = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub AND DATE(sent_at) = CURRENT_DATE"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
+                    if not already_sent_today:
+                        print(f"--> Enviando aviso de {days_left} dias para {contact.get('Email')}")
+                        send_emails_in_batches([contact], subject, body, user_settings, user_id)
+
+
 def worker_main_loop():
-    """Loop principal do worker, agora processando usuário por usuário e com auto-ping."""
     print("--- Worker de Fundo Iniciado ---")
     self_url = os.environ.get('RENDER_EXTERNAL_URL')
     while True:
@@ -685,20 +848,27 @@ def worker_main_loop():
                     print(f"-> Worker: Auto-ping para {self_url} bem-sucedido.")
                 except requests.RequestException as e:
                     print(f"-> Worker: Falha no auto-ping: {e}")
+            
             conn = get_db_connection()
             active_users = conn.execute(text("SELECT * FROM users WHERE plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE")).mappings().fetchall()
-            if not active_users:
-                print("-> Worker: Nenhum usuário com plano ativo encontrado.")
-            else:
-                print(f"-> Worker: Encontrados {len(active_users)} usuários ativos para processar.")
+            
+            if not active_users: print("-> Worker: Nenhum usuário com plano ativo encontrado.")
+            else: print(f"-> Worker: Encontrados {len(active_users)} usuários ativos para processar.")
+            
             for user in active_users:
                 user_settings = dict(user)
                 print(f"--- Processando para: {user_settings['email']} ---")
                 if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
                     print("-> AVISO: Configurações incompletas. Pulando.")
                     continue
-                # Aqui você chamaria suas funções de automação, passando 'user_settings' e 'conn'
-                # ex: worker_process_automations(user_settings, conn)
+                try:
+                    with conn.begin():
+                        all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                        worker_process_pending_schedules(user_settings, all_contacts, conn)
+                        worker_check_and_run_automations(user_settings, all_contacts, conn)
+                except Exception as e:
+                    print(f"--> ERRO ao processar para o usuário {user_settings['email']}: {e}")
+
             print(f"[{datetime.now()}] Worker: Ciclo concluído.")
         except Exception as e:
             print(f"ERRO CRÍTICO NO WORKER: {e}")
@@ -707,11 +877,10 @@ def worker_main_loop():
                 conn.close()
 
 def start_background_worker():
-    """Função que será executada em segundo plano para sempre."""
     print("Iniciando o loop do worker em uma greenlet...")
     worker_main_loop()
 
 print("Disparando greenlet para o background worker...")
 gevent.spawn(start_background_worker)
 
-# O Gunicorn assume o controle a partir daqui. Não use app.run().
+# O Gunicorn assume o controle a partir daqui. Não use app.run
