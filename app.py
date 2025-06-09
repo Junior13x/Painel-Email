@@ -44,8 +44,9 @@ def get_db_connection():
     conn = engine.connect()
     return conn
 
-def init_db_logic():
-    """Lógica de inicialização que pode ser chamada de qualquer lugar."""
+@app.cli.command('init-db')
+def init_db_command():
+    """Cria as tabelas do banco de dados e o usuário admin inicial."""
     conn = None
     try:
         conn = get_db_connection()
@@ -98,43 +99,11 @@ def init_db_logic():
         print("\nBanco de dados inicializado com sucesso!")
     except Exception as e:
         print(f"\nOcorreu um erro durante a inicialização do banco de dados: {e}")
-        raise # Levanta o erro para ser capturado na rota
     finally:
         if conn and not conn.closed:
             conn.close()
             print("Conexão com o banco de dados fechada.")
 
-@app.cli.command('init-db')
-def init_db_command():
-    """Comando para ser usado via linha de comando (como em um Job)."""
-    init_db_logic()
-
-# ===============================================================
-# == ROTAS DE DEBBUGING E INICIALIZAÇÃO ==
-# ===============================================================
-@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
-def secret_init_db():
-    try:
-        init_db_logic()
-        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA ESTA ROTA DO SEU app.py AGORA POR MOTIVOS DE SEGURANÇA."
-        flash(message, "success")
-        return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
-    except Exception as e:
-        message = f"Erro ao reinicializar o banco de dados: {e}"
-        flash(message, "danger")
-        return f"<h1>Erro</h1><p>{message}</p>", 500
-
-@app.route('/debug-features')
-def debug_features():
-    conn = None
-    try:
-        conn = get_db_connection()
-        features = conn.execute(text("SELECT * FROM features")).mappings().fetchall()
-        return jsonify([dict(f) for f in features])
-    except Exception as e:
-        return f"Erro ao buscar features: {e}", 500
-    finally:
-        if conn: conn.close()
 
 # ===============================================================
 # == DECORATORS (AUTENTICAÇÃO E PERMISSÕES) ==
@@ -521,29 +490,65 @@ def create_payment():
     try:
         conn = get_db_connection()
         plan = conn.execute(text("SELECT * FROM plans WHERE id = :pid"), {'pid': plan_id}).mappings().fetchone()
-        access_token, base_url = os.environ.get("MERCADO_PAGO_ACCESS_TOKEN"), os.environ.get('RENDER_EXTERNAL_URL')
+        
+        access_token = os.environ.get("MERCADO_PAGO_ACCESS_TOKEN")
+        base_url = os.environ.get('RENDER_EXTERNAL_URL')
         if not all([plan, access_token, base_url]):
-            flash("Configuração inválida para pagamento (plano, token ou URL externa).", "danger")
+            flash("Configuração inválida para pagamento. Verifique se o plano existe e se as variáveis MERCADO_PAGO_ACCESS_TOKEN e RENDER_EXTERNAL_URL estão definidas no Render.", "danger")
             return redirect(url_for('plans_page'))
+            
         sdk = mercadopago.SDK(access_token)
+        
+        payer_info = {
+            "email": session["user_email"],
+            "first_name": "Usuario",
+            "last_name": "Painel"
+        }
+
         payment_data = {
-            "transaction_amount": float(plan['price']), "description": f"Plano {plan['name']}",
-            "payment_method_id": "pix", "payer": {"email": session["user_email"]},
+            "transaction_amount": float(plan['price']),
+            "description": f"Plano {plan['name']} - {session['user_email']}",
+            "payment_method_id": "pix",
+            "payer": payer_info,
             "notification_url": f"{base_url}{url_for('mp_webhook')}",
             "external_reference": f"user:{session['user_id']};plan:{plan_id}"
         }
+        
         payment_response = sdk.payment().create(payment_data)
+        
         if payment_response and payment_response.get("status") == 201:
             pi = payment_response["response"]['point_of_interaction']['transaction_data']
             return render_template("pagamento_pix.html", pix_code=pi['qr_code'], qr_code_base64=pi['qr_code_base64'])
         else:
-            flash(f"Erro no MP: {payment_response.get('response', {}).get('message', 'Erro desconhecido')}", "danger")
+            error_message = payment_response.get('response', {}).get('message', 'Erro desconhecido na API do Mercado Pago.')
+            flash(f"Erro ao gerar cobrança: {error_message}", "danger")
+            print(f"Erro Mercado Pago (status não 201): {payment_response}")
+            return redirect(url_for('plans_page'))
+
     except Exception as e:
-        print(f"Erro crítico ao criar pagamento: {e}")
-        flash("Ocorreu um erro ao gerar a cobrança Pix.", "danger")
+        print("--- ERRO CRÍTICO AO CRIAR PAGAMENTO ---")
+        print(f"Exceção capturada: {e}")
+        
+        error_message_for_user = "Ocorreu um erro ao gerar a cobrança Pix."
+        try:
+            sdk_error_body = json.loads(e.body)
+            api_message = sdk_error_body.get("message", "Erro na API do MP.")
+            causes = sdk_error_body.get("cause", [])
+            if causes:
+                cause_descriptions = [c.get('description', '') for c in causes]
+                details = ', '.join(cause_descriptions)
+                error_message_for_user = f"Erro do Mercado Pago: {api_message} Detalhes: {details}"
+            else:
+                error_message_for_user = f"Erro do Mercado Pago: {api_message}"
+        except (AttributeError, ValueError, KeyError, TypeError):
+            error_message_for_user = f"Ocorreu um erro inesperado: {e}"
+        
+        print(f"Mensagem de erro para o usuário: {error_message_for_user}")
+        print("--- FIM DO ERRO ---")
+        flash(error_message_for_user, "danger")
+        return redirect(url_for('plans_page'))
     finally:
         if conn: conn.close()
-    return redirect(url_for('plans_page'))
 
 @app.route('/mercado-pago/webhook', methods=['POST'])
 def mp_webhook():
