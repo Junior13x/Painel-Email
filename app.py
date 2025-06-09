@@ -56,18 +56,21 @@ def init_db_command():
             print("Tabelas antigas removidas (se existiam).")
 
             # --- Criação de Todas as Tabelas ---
+            # A ordem é importante por causa das chaves estrangeiras
+            conn.execute(text("CREATE TABLE features (id SERIAL PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, description TEXT);"))
+            conn.execute(text("CREATE TABLE plans (id SERIAL PRIMARY KEY, name TEXT NOT NULL, price NUMERIC(10, 2) NOT NULL, validity_days INTEGER NOT NULL, daily_send_limit INTEGER DEFAULT 25, is_active BOOLEAN DEFAULT TRUE);"))
             conn.execute(text("""
                 CREATE TABLE users (
                     id SERIAL PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL DEFAULT 'user', plan_id INTEGER, plan_expiration_date DATE,
+                    role TEXT NOT NULL DEFAULT 'user', 
+                    plan_id INTEGER REFERENCES plans(id) ON DELETE SET NULL, 
+                    plan_expiration_date DATE,
                     baserow_host TEXT, baserow_api_key TEXT, baserow_table_id TEXT,
                     smtp_host TEXT, smtp_port INTEGER, smtp_user TEXT, smtp_password TEXT,
                     batch_size INTEGER, delay_seconds INTEGER, automations_config TEXT,
                     sends_today INTEGER DEFAULT 0, last_send_date DATE
                 );
             """))
-            conn.execute(text("CREATE TABLE features (id SERIAL PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, description TEXT);"))
-            conn.execute(text("CREATE TABLE plans (id SERIAL PRIMARY KEY, name TEXT NOT NULL, price NUMERIC(10, 2) NOT NULL, validity_days INTEGER NOT NULL, daily_send_limit INTEGER DEFAULT 25, is_active BOOLEAN DEFAULT TRUE);"))
             conn.execute(text("CREATE TABLE plan_features (plan_id INTEGER REFERENCES plans(id) ON DELETE CASCADE, feature_id INTEGER REFERENCES features(id) ON DELETE CASCADE, PRIMARY KEY (plan_id, feature_id));"))
             conn.execute(text("CREATE TABLE envio_historico (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), recipient_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT, sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);"))
             conn.execute(text("CREATE TABLE scheduled_emails (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), schedule_type TEXT NOT NULL, status_target TEXT, manual_recipients TEXT, subject TEXT NOT NULL, body TEXT NOT NULL, send_at TIMESTAMP NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, is_sent BOOLEAN DEFAULT FALSE);"))
@@ -80,9 +83,6 @@ def init_db_command():
             default_email = 'junior@admin.com'
             default_pass = '130896'
             password_hash = generate_password_hash(default_pass)
-            # Adiciona a referência ao plano 'plans' que será criado a seguir.
-            # Assume-se que um plano para admin será criado ou que o admin não precisa de um plano específico para operar.
-            # Para simplificar, o admin não terá um plan_id. Sua lógica de permissão já cuida disso.
             conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"), {'email': default_email, 'password_hash': password_hash})
             print(f"ADMIN PADRÃO CRIADO! E-mail: {default_email} | Senha: {default_pass}")
         
@@ -184,7 +184,7 @@ def inject_user_info():
                 sends_today = user['sends_today']
             sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
 
-        return dict(user_plan_status=plan_status, sends_remaining=sends_remaining)
+        return dict(user_plan_status=plan_status, sends_remaining=sends_remaining, is_admin=(user['role'] == 'admin'))
     except Exception as e:
         print(f"Erro ao injetar dados do plano: {e}")
         return {}
@@ -533,11 +533,10 @@ def mp_webhook():
 def mass_send_page():
     user_id = session['user_id']
     settings = load_user_settings(user_id)
-    limit_info = inject_user_info() # Pega informações do context processor
-    sends_remaining = limit_info.get('sends_remaining', 0)
+    sends_remaining = inject_user_info().get('sends_remaining', 0)
 
     if request.method == 'POST':
-        if not all(settings.get(k) for k in ['smtp_host', 'smtp_user', 'smtp_password']):
+        if session.get('role') != 'admin' and not all(settings.get(k) for k in ['smtp_host', 'smtp_user', 'smtp_password']):
             flash("Configurações de SMTP incompletas.", "danger")
             return redirect(url_for('settings_page'))
         
@@ -563,7 +562,6 @@ def mass_send_page():
             subject, body = request.form.get('subject'), request.form.get('body')
             sent, failed = send_emails_in_batches(recipients, subject, body, settings, user_id)
             
-            # Atualiza o contador de envios
             if sends_remaining != -1 and sent > 0:
                 conn = get_db_connection()
                 with conn.begin():
@@ -602,37 +600,40 @@ def settings_page():
     try:
         conn = get_db_connection()
         if request.method == 'POST':
-            # Lógica para salvar as configurações de automação como JSON
-            automations = {
-                'welcome': {'enabled': 'welcome_enabled' in request.form, 'subject': request.form.get('welcome_subject'), 'body': request.form.get('welcome_body')},
-                'expiry': {
-                    'enabled': 'expiry_enabled' in request.form,
-                    'subject_7_days': request.form.get('expiry_7_days_subject'), 'body_7_days': request.form.get('expiry_7_days_body'),
-                    'subject_3_days': request.form.get('expiry_3_days_subject'), 'body_3_days': request.form.get('expiry_3_days_body'),
-                    'subject_1_day': request.form.get('expiry_1_day_subject'), 'body_1_day': request.form.get('expiry_1_day_body')
-                }
-            }
-            
-            update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user']}
-            update_fields.update({
-                'smtp_port': int(request.form.get('smtp_port') or 587),
-                'batch_size': int(request.form.get('batch_size') or 15),
-                'delay_seconds': int(request.form.get('delay_seconds') or 60),
-                'automations_config': json.dumps(automations) # Converte o dicionário para string JSON
-            })
+            if is_admin and 'mp_access_token' in request.form:
+                # Lógica para admin salvar o token do MP nas variáveis de ambiente (não recomendado diretamente, mas para manter a funcionalidade)
+                # O ideal é o admin configurar isso diretamente no Render.com
+                pass 
 
-            set_clauses = [f"{key} = :{key}" for key in update_fields]
-            if request.form.get('smtp_password'):
-                set_clauses.append("smtp_password = :smtp_password")
-                update_fields['smtp_password'] = request.form.get('smtp_password')
-            
             with conn.begin():
+                automations = {
+                    'welcome': {'enabled': 'welcome_enabled' in request.form, 'subject': request.form.get('welcome_subject'), 'body': request.form.get('welcome_body')},
+                    'expiry': {
+                        'enabled': 'expiry_enabled' in request.form,
+                        'subject_7_days': request.form.get('expiry_7_days_subject'), 'body_7_days': request.form.get('expiry_7_days_body'),
+                        'subject_3_days': request.form.get('expiry_3_days_subject'), 'body_3_days': request.form.get('expiry_3_days_body'),
+                        'subject_1_day': request.form.get('expiry_1_day_subject'), 'body_1_day': request.form.get('expiry_1_day_body')
+                    }
+                }
+                
+                update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user']}
+                update_fields.update({
+                    'smtp_port': int(request.form.get('smtp_port') or 587),
+                    'batch_size': int(request.form.get('batch_size') or 15),
+                    'delay_seconds': int(request.form.get('delay_seconds') or 60),
+                    'automations_config': json.dumps(automations)
+                })
+
+                set_clauses = [f"{key} = :{key}" for key in update_fields]
+                if request.form.get('smtp_password'):
+                    set_clauses.append("smtp_password = :smtp_password")
+                    update_fields['smtp_password'] = request.form.get('smtp_password')
+                
                 conn.execute(text(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = :user_id"), {**update_fields, 'user_id': user_id})
 
             flash("Configurações salvas!", "success")
             return redirect(url_for('settings_page'))
         
-        # Lógica GET
         user_settings_row = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()
         user_settings = dict(user_settings_row) if user_settings_row else {}
         
@@ -649,10 +650,7 @@ def settings_page():
     
     except Exception as e:
         flash(f"Erro ao salvar/carregar configurações: {e}", "danger")
-        user_settings = {}
-        global_settings = {}
-        return render_template('settings.html', user_settings=user_settings, global_settings=global_settings)
-    
+        return redirect(url_for('dashboard'))
     finally:
         if conn: conn.close()
 
@@ -900,16 +898,17 @@ def worker_main_loop():
                     print(f"-> Worker: Falha no auto-ping: {e}")
             
             conn = get_db_connection()
-            active_users = conn.execute(text("SELECT * FROM users WHERE plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE")).mappings().fetchall()
+            # Correção: O worker deve processar usuários com plano ativo, mas também o admin
+            active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
             
-            if not active_users: print("-> Worker: Nenhum usuário com plano ativo encontrado.")
+            if not active_users: print("-> Worker: Nenhum usuário ativo (com plano ou admin) encontrado.")
             else: print(f"-> Worker: Encontrados {len(active_users)} usuários ativos para processar.")
             
             for user in active_users:
                 user_settings = dict(user)
                 print(f"--- Processando para: {user_settings['email']} ---")
-                if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
-                    print("-> AVISO: Configurações incompletas. Pulando.")
+                if user_settings['role'] != 'admin' and not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
+                    print("-> AVISO: Configurações do usuário incompletas. Pulando.")
                     continue
                 try:
                     with conn.begin():
