@@ -44,9 +44,8 @@ def get_db_connection():
     conn = engine.connect()
     return conn
 
-@app.cli.command('init-db')
-def init_db_command():
-    """Cria as tabelas do banco de dados e o usuário admin inicial."""
+def init_db_logic():
+    """Lógica de inicialização que pode ser chamada de qualquer lugar."""
     conn = None
     try:
         conn = get_db_connection()
@@ -99,11 +98,31 @@ def init_db_command():
         print("\nBanco de dados inicializado com sucesso!")
     except Exception as e:
         print(f"\nOcorreu um erro durante a inicialização do banco de dados: {e}")
+        raise # Levanta o erro para ser capturado na rota
     finally:
         if conn and not conn.closed:
             conn.close()
             print("Conexão com o banco de dados fechada.")
 
+@app.cli.command('init-db')
+def init_db_command():
+    """Comando para ser usado via linha de comando (como em um Job)."""
+    init_db_logic()
+
+# ===============================================================
+# == ROTA SECRETA PARA INICIALIZAÇÃO DO BANCO DE DADOS ==
+# ===============================================================
+@app.route('/run-db-initialization-once/meu-reset-secreto-1308')
+def secret_init_db():
+    try:
+        init_db_logic()
+        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA ESTA ROTA DO SEU app.py AGORA POR MOTIVOS DE SEGURANÇA."
+        flash(message, "success")
+        return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
+    except Exception as e:
+        message = f"Erro ao reinicializar o banco de dados: {e}"
+        flash(message, "danger")
+        return f"<h1>Erro</h1><p>{message}</p>", 500
 
 # ===============================================================
 # == DECORATORS (AUTENTICAÇÃO E PERMISSÕES) ==
