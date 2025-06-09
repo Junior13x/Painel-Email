@@ -1,81 +1,112 @@
 {% extends "base.html" %}
 
-{% block title %}Gerenciar Planos{% endblock %}
+{% block title %}Gerenciar Planos de Assinatura{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-    <h1>Gerenciar Planos</h1>
-    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
-</div>
-<p>Crie e gerencie os planos de assinatura disponíveis para os usuários.</p>
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="h2">Gerenciar Planos</h1>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
+    </div>
+    <p class="text-muted">Crie e gerencie os planos de assinatura disponíveis para os usuários.</p>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-  {% if messages %}
-    {% for category, message in messages %}
-      <div class="alert alert-{{ category }} mt-3">{{ message }}</div>
-    {% endfor %}
-  {% endif %}
-{% endwith %}
+    <hr>
 
-<hr>
-
-<div class="row g-5">
-    <div class="col-md-5">
-        <h4>Criar Novo Plano</h4>
-        <div class="card">
-            <div class="card-body">
-                <form method="POST">
-                    
-                    <div class="mb-3">
-                        <label for="name" class="form-label">Nome do Plano</label>
-                        <input type="text" name="name" class="form-control" required placeholder="Ex: VIP Mensal">
-                    </div>
-                    <div class="mb-3">
-                        <label for="price" class="form-label">Preço (R$)</label>
-                        <input type="number" step="0.01" name="price" class="form-control" required placeholder="Ex: 29.90">
-                    </div>
-                    <div class="mb-3">
-                        <label for="validity_days" class="form-label">Dias de Validade</label>
-                        <input type="number" name="validity_days" class="form-control" required placeholder="Ex: 30">
-                    </div>
-                    <div class="mb-3">
-                        <label for="daily_send_limit" class="form-label">Limite de Envios Diários</label>
-                        <input type="number" name="daily_send_limit" class="form-control" required value="50">
-                        <div class="form-text">Use -1 para envios ilimitados.</div>
-                    </div>
-    
-                    <div class="mb-3">
-                        <label class="form-label">Recursos Incluídos no Plano</label>
-                        {% for feature in all_features %}
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" name="features" value="{{ feature.id }}" id="feature_{{ feature.id }}">
-                            <label class="form-check-label" for="feature_{{ feature.id }}">
-                                {{ feature.name }}
-                            </label>
+    <div class="row g-5">
+        <!-- Coluna do Formulário para Criar Novo Plano -->
+        <div class="col-md-5 col-lg-4">
+            <h4 class="mb-3">Criar Novo Plano</h4>
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('manage_plans_page') }}">
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Nome do Plano</label>
+                            <input type="text" class="form-control" id="name" name="name" placeholder="Ex: VIP Mensal" required>
                         </div>
-                        {% endfor %}
-                    </div>
-    
-                    <button type="submit" class="btn btn-primary">Criar Plano</button>
-                </form>
+                        <div class="mb-3">
+                            <label for="price" class="form-label">Preço (R$)</label>
+                            <input type="number" step="0.01" class="form-control" id="price" name="price" placeholder="Ex: 99.90" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="validity_days" class="form-label">Dias de Validade</label>
+                            <input type="number" class="form-control" id="validity_days" name="validity_days" value="30" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="daily_send_limit" class="form-label">Limite de Envios Diários</label>
+                            <input type="number" class="form-control" id="daily_send_limit" name="daily_send_limit" value="500" required>
+                            <div class="form-text">Use -1 para envios ilimitados.</div>
+                        </div>
+
+                        <hr class="my-4">
+
+                        <h6>Recursos Inclusos</h6>
+                        <div class="mb-3">
+                            {% for feature in all_features %}
+                            <div class="form-check">
+                                <!-- GARANTA QUE ESTES ATRIBUTOS ESTEJAM CORRETOS -->
+                                <input class="form-check-input" type="checkbox" name="features" value="{{ feature.id }}" id="feature-{{ feature.id }}">
+                                <label class="form-check-label" for="feature-{{ feature.id }}">
+                                    {{ feature.name }}
+                                </label>
+                            </div>
+                            {% else %}
+                            <p class="text-muted">Nenhum recurso cadastrado.</p>
+                            {% endfor %}
+                        </div>
+
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-primary mt-3">Criar Plano</button>
+                        </div>
+                    </form>
+                </div>
             </div>
         </div>
-    </div>
-    <div class="col-md-7">
-        <h4>Planos Existentes</h4>
-        <div class="list-group">
-            {% for plan in plans %}
-            <div class="list-group-item d-flex justify-content-between align-items-center">
-                <span>
-                    <strong>{{ plan.name }}</strong> - R$ {{ ("%.2f"|format(plan.price|float)).replace(',', '.') }} / {{ plan.validity_days }} dias
-                </span>
-                <form action="{{ url_for('delete_plan', plan_id=plan.id) }}" method="POST" onsubmit="return confirm('Tem certeza que deseja excluir o plano {{ plan.name }}?');">
-                    <button type="submit" class="btn btn-sm btn-outline-danger">Excluir</button>
-                </form>
+        
+        <!-- Coluna da Lista de Planos Existentes -->
+        <div class="col-md-7 col-lg-8">
+            <h4 class="mb-3">Planos Existentes</h4>
+            <div class="table-responsive">
+                <table class="table table-striped table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th>Nome</th>
+                            <th>Preço</th>
+                            <th>Validade</th>
+                            <th>Limite Diário</th>
+                            <th>Recursos</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for plan in plans %}
+                        <tr>
+                            <td>{{ plan.name }}</td>
+                            <td>R$ {{ "%.2f"|format(plan.price) }}</td>
+                            <td>{{ plan.validity_days }} dias</td>
+                            <td>
+                                {% if plan.daily_send_limit == -1 %}
+                                    Ilimitado
+                                {% else %}
+                                    {{ plan.daily_send_limit }}
+                                {% endif %}
+                            </td>
+                            <td><span class="badge bg-primary">{{ plan.feature_count }}</span></td>
+                            <td>
+                                <!-- A edição de planos pode ser implementada no futuro -->
+                                <!-- <a href="#" class="btn btn-sm btn-outline-primary">Editar</a> -->
+                                <form action="{{ url_for('delete_plan', plan_id=plan.id) }}" method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o plano {{ plan.name }}?');">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Excluir</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="6" class="text-center text-muted">Nenhum plano cadastrado.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
-            {% else %}
-            <div class="list-group-item text-center text-muted">Nenhum plano criado ainda.</div>
-            {% endfor %}
         </div>
     </div>
 </div>
