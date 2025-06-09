@@ -1,5 +1,6 @@
-import sqlite3
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
+from sqlalchemy import create_engine, text # Adicione esta linha
+import os # Adicione esta linha para ler as variáveis de ambientes
 from functools import wraps
 import requests
 import re
@@ -19,74 +20,157 @@ app.secret_key = 'uma-chave-secreta-muito-dificil-de-adivinhar'
 # ===============================================================
 
 def get_db_connection():
-    """Cria e retorna uma conexão com o banco de dados."""
-    conn = sqlite3.connect('painel.db', check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    """Cria e retorna uma conexão com o banco de dados PostgreSQL."""
+    db_url = os.environ.get('DATABASE_URL')
+    if not db_url:
+        raise ValueError("Variável de ambiente DATABASE_URL não foi configurada.")
+    
+    # Corrige a URL para compatibilidade com SQLAlchemy
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+        
+    engine = create_engine(db_url)
+    conn = engine.connect()
     return conn
 
-def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
+@app.cli.command('init-db')
+def init_db_command():
+    """Cria as tabelas do banco de dados e o usuário admin inicial."""
+    try:
+        conn = get_db_connection()
+        print("Conectado ao banco de dados. Iniciando a criação das tabelas...")
 
-    # --- Estrutura da Tabela USERS ---
-    # Verifica a existência da tabela users antes de tentar alterá-la
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users';")
-    table_exists = cursor.fetchone()
+        # O comando 'CASCADE' apaga tabelas que dependem umas das outras.
+        # CUIDADO: ISSO APAGA TODOS OS DADOS!
+        conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates CASCADE;"))
+        print("Tabelas antigas removidas (se existiam).")
 
-    # Cria a tabela com todas as colunas se ela não existir
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user',
-            plan TEXT NOT NULL DEFAULT 'free', plan_start_date DATE, plan_validity_days INTEGER,
-            baserow_host TEXT, baserow_api_key TEXT, baserow_table_id TEXT,
-            smtp_host TEXT, smtp_port INTEGER, smtp_user TEXT, smtp_password TEXT,
-            batch_size INTEGER, delay_seconds INTEGER, automations_config TEXT
-        )""")
+        # --- Criação da Tabela USERS ---
+        conn.execute(text("""
+            CREATE TABLE users (
+                id SERIAL PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                plan_id INTEGER,
+                plan_expiration_date DATE,
+                baserow_host TEXT,
+                baserow_api_key TEXT,
+                baserow_table_id TEXT,
+                smtp_host TEXT,
+                smtp_port INTEGER,
+                smtp_user TEXT,
+                smtp_password TEXT,
+                batch_size INTEGER,
+                delay_seconds INTEGER,
+                automations_config TEXT,
+                sends_today INTEGER DEFAULT 0,
+                last_send_date DATE
+            );
+        """))
+        print("Tabela 'users' criada.")
 
-    # Se a tabela já existia, tenta adicionar as colunas uma a uma (para migrações futuras)
-    if table_exists:
-        user_columns = [
-            ('plan', "TEXT NOT NULL DEFAULT 'free'"), ('plan_start_date', "DATE"), ('plan_validity_days', "INTEGER"),
-            ('baserow_host', "TEXT"), ('baserow_api_key', "TEXT"), ('baserow_table_id', "TEXT"),
-            ('smtp_host', "TEXT"), ('smtp_port', "INTEGER"), ('smtp_user', "TEXT"), ('smtp_password', "TEXT"),
-            ('batch_size', "INTEGER"), ('delay_seconds', "INTEGER"), ('automations_config', "TEXT")
-        ]
-        for col_name, col_type in user_columns:
-            try:
-                cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type};")
-            except sqlite3.OperationalError:
-                pass # Coluna já existe, ignora o erro
-    
-    # --- Criação do Admin Padrão ---
-    # Após garantir que a tabela está com a estrutura correta, verifica se existe um admin
-    cursor.execute("SELECT COUNT(id) FROM users")
-    user_count = cursor.fetchone()[0]
-    if user_count == 0:
-        print("Nenhum usuário encontrado. Criando usuário admin padrão...")
+        # --- Criação da Tabela FEATURES ---
+        conn.execute(text("""
+            CREATE TABLE features (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                slug TEXT NOT NULL UNIQUE,
+                description TEXT
+            );
+        """))
+        print("Tabela 'features' criada.")
+        
+        # --- Criação da Tabela PLANS ---
+        conn.execute(text("""
+            CREATE TABLE plans (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                price NUMERIC(10, 2) NOT NULL,
+                validity_days INTEGER NOT NULL,
+                daily_send_limit INTEGER DEFAULT 25,
+                is_active BOOLEAN DEFAULT TRUE
+            );
+        """))
+        print("Tabela 'plans' criada.")
+        
+        # --- Criação da Tabela PLAN_FEATURES (relação entre planos e features) ---
+        conn.execute(text("""
+            CREATE TABLE plan_features (
+                plan_id INTEGER REFERENCES plans(id) ON DELETE CASCADE,
+                feature_id INTEGER REFERENCES features(id) ON DELETE CASCADE,
+                PRIMARY KEY (plan_id, feature_id)
+            );
+        """))
+        print("Tabela 'plan_features' criada.")
+
+        # --- Criação de Outras Tabelas ---
+        conn.execute(text("""
+           CREATE TABLE envio_historico (
+               id SERIAL PRIMARY KEY, 
+               user_id INTEGER REFERENCES users(id), 
+               recipient_email TEXT NOT NULL, 
+               subject TEXT NOT NULL, 
+               body TEXT, 
+               sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+           );
+        """))
+        conn.execute(text("""
+            CREATE TABLE scheduled_emails (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                schedule_type TEXT NOT NULL,
+                status_target TEXT,
+                manual_recipients TEXT,
+                subject TEXT NOT NULL,
+                body TEXT NOT NULL,
+                send_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_sent BOOLEAN DEFAULT FALSE
+            );
+        """))
+        conn.execute(text("""
+            CREATE TABLE email_templates (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                name TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                body TEXT NOT NULL,
+                UNIQUE(user_id, name)
+            );
+        """))
+        print("Tabelas de histórico, agendamentos e templates criadas.")
+
+        # --- Inserção de Dados Iniciais ---
+        conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Agendamentos', 'schedules', 'Permite agendar envios de e-mail para o futuro.');"))
+        print("Features iniciais inseridas.")
+
+        # --- Criação do Admin Padrão ---
         default_email = 'junior@admin.com'
         default_pass = '130896' # Lembre-se de trocar essa senha depois
         password_hash = generate_password_hash(default_pass)
-        cursor.execute(
-            "INSERT INTO users (email, password_hash, role, plan, plan_validity_days) VALUES (?, ?, 'admin', 'vip', 9999)",
-            (default_email, password_hash)
+        
+        # A sintaxe de inserção com SQLAlchemy usa ':key' para os parâmetros
+        conn.execute(
+            text("""
+                INSERT INTO users (email, password_hash, role) 
+                VALUES (:email, :password_hash, 'admin')
+            """),
+            {'email': default_email, 'password_hash': password_hash}
         )
         print(f"ADMIN PADRÃO CRIADO! E-mail: {default_email} | Senha: {default_pass}")
-
-    # --- Outras Tabelas ---
-    try: cursor.execute("ALTER TABLE envio_historico ADD COLUMN body TEXT;")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE scheduled_emails ADD COLUMN user_id INTEGER;")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE email_templates ADD COLUMN user_id INTEGER;")
-    except sqlite3.OperationalError: pass
         
-    cursor.execute("CREATE TABLE IF NOT EXISTS envio_historico (id INTEGER PRIMARY KEY, user_id INTEGER, recipient_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT, sent_at TEXT NOT NULL)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS scheduled_emails (id INTEGER PRIMARY KEY, user_id INTEGER, schedule_type TEXT NOT NULL, status_target TEXT, manual_recipients TEXT, subject TEXT NOT NULL, body TEXT NOT NULL, send_at DATETIME NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, is_sent BOOLEAN DEFAULT FALSE)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS email_templates (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(user_id, name))")
-    
-    conn.commit()
-    conn.close()
+        # O commit é essencial para salvar todas as alterações no banco
+        conn.commit()
+        
+        print("\nBanco de dados inicializado com sucesso!")
 
+    except Exception as e:
+        print(f"\nOcorreu um erro durante a inicialização do banco de dados: {e}")
+    finally:
+        if 'conn' in locals() and not conn.closed:
+            conn.close()
+            print("Conexão com o banco de dados fechada.")
 
 # ===============================================================
 # == FUNÇÕES DE LÓGICA (HELPERS) ==
@@ -102,7 +186,7 @@ def inject_user_send_limit():
         return {} # Retorna um dicionário vazio se o usuário não estiver logado
 
     conn = get_db_connection()
-    user = conn.execute("SELECT * FROM users WHERE id = ?", (session['user_id'],)).fetchone()
+    user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': session['user_id']}).fetchone()
     
     if not user:
         conn.close(); return {}
