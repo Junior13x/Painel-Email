@@ -77,12 +77,18 @@ def init_db_command():
             print("Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
-            conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Agendamentos', 'schedules', 'Permite agendar envios de e-mail para o futuro.');"))
-            conn.execute(text("INSERT INTO plans (name, price, validity_days, daily_send_limit, is_active) VALUES ('VIP', 99.99, 30, 500, TRUE);"))
-            result = conn.execute(text("SELECT id FROM plans WHERE name = 'VIP';")).scalar()
-            conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, (SELECT id FROM features WHERE slug='schedules'));"), {'pid': result})
+            conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Envio em Massa e por Status', 'mass-send', 'Permite o envio de e-mails em massa e por status de cliente.');"))
+            conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Agendamentos de Campanhas', 'schedules', 'Permite agendar envios de e-mail para o futuro.');"))
+            conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Automações Inteligentes', 'automations', 'Configura e-mails automáticos de boas-vindas e lembretes de expiração.');"))
+            print("Features iniciais inseridas.")
 
-            print("Features e Plano VIP iniciais inseridos.")
+            conn.execute(text("INSERT INTO plans (name, price, validity_days, daily_send_limit, is_active) VALUES ('VIP', 99.99, 30, 500, TRUE);"))
+            vip_plan_id = conn.execute(text("SELECT id FROM plans WHERE name = 'VIP';")).scalar()
+            
+            all_feature_ids = conn.execute(text("SELECT id FROM features;")).mappings().fetchall()
+            for feature_id_row in all_feature_ids:
+                conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, :fid);"), {'pid': vip_plan_id, 'fid': feature_id_row['id']})
+            print("Plano VIP inicial criado e associado a todas as features.")
 
             default_email = 'junior@admin.com'
             default_pass = '130896'
@@ -124,11 +130,9 @@ def feature_required(feature_slug):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            # Acesso garantido se for admin
             if session.get('role') == 'admin':
                 return f(*args, **kwargs)
 
-            # Busca as features do usuário (que já foram calculadas no context_processor)
             user_features = session.get('user_features', [])
             
             if feature_slug in user_features:
@@ -153,7 +157,6 @@ def inject_user_info():
             session.clear()
             return {}
         
-        # --- Lógica de Features (Permissões) ---
         enabled_features = set()
         if user['role'] == 'admin':
             all_features = conn.execute(text("SELECT slug FROM features")).mappings().fetchall()
@@ -166,9 +169,8 @@ def inject_user_info():
                     {'plan_id': user['plan_id']}
                 ).mappings().fetchall()
                 enabled_features = {row['slug'] for row in feature_rows}
-        session['user_features'] = list(enabled_features) # Salva na sessão
+        session['user_features'] = list(enabled_features)
 
-        # --- Lógica de Status do Plano ---
         plan_status = {'plan_name': 'Grátis', 'badge_class': 'secondary', 'days_left': None}
         if user['role'] == 'admin':
             plan_status = {'plan_name': 'Admin', 'badge_class': 'danger', 'days_left': 9999}
@@ -182,7 +184,6 @@ def inject_user_info():
             else:
                 plan_status = {'plan_name': f"{plan_name} (Expirado)", 'badge_class': 'warning', 'days_left': days_left}
         
-        # --- Lógica de Limite de Envios ---
         sends_remaining = -1
         if user['role'] != 'admin':
             plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
@@ -543,7 +544,7 @@ def mp_webhook():
 # --- ROTAS DE FUNCIONALIDADES ---
 @app.route('/envio-em-massa', methods=['GET', 'POST'])
 @login_required
-@feature_required('schedules')
+@feature_required('mass-send')
 def mass_send_page():
     user_id = session['user_id']
     settings = load_user_settings(user_id)
@@ -670,7 +671,7 @@ def settings_page():
 
 @app.route('/history')
 @login_required
-@feature_required('schedules')
+@feature_required('mass-send')
 def history_page():
     conn = None
     try:
@@ -682,7 +683,7 @@ def history_page():
 
 @app.route('/history/resend', methods=['POST'])
 @login_required
-@feature_required('schedules')
+@feature_required('mass-send')
 def resend_from_history():
     session['resend_subject'] = request.form.get('subject')
     session['resend_body'] = request.form.get('body')
@@ -691,7 +692,7 @@ def resend_from_history():
 
 @app.route('/history/save-as-template', methods=['POST'])
 @login_required
-@feature_required('schedules')
+@feature_required('mass-send')
 def save_history_as_template():
     template_name, subject, body, user_id = request.form.get('template_name'), request.form.get('subject'), request.form.get('body'), session['user_id']
     if not all([template_name, subject, body]):
@@ -714,7 +715,7 @@ def save_history_as_template():
 
 @app.route('/templates', methods=['GET', 'POST'])
 @login_required
-@feature_required('schedules')
+@feature_required('mass-send')
 def templates_page():
     conn, user_id = None, session['user_id']
     try:
@@ -800,7 +801,7 @@ def delete_schedule(email_id):
 
 @app.route('/automations', methods=['GET', 'POST'])
 @login_required
-@feature_required('schedules')
+@feature_required('automations')
 def automations_page():
     user_id = session['user_id']
     conn = None
