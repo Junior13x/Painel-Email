@@ -920,4 +920,4 @@ def start_background_worker():
 print("Disparando greenlet para o background worker...")
 gevent.spawn(start_background_worker)
 
-# O Gunicorn assume o controle a partir daqui. Não use app.run().
+# O Gunicorn assume o controle a partir daqui. Não use app.run
