@@ -188,25 +188,35 @@ def inject_user_send_limit():
         return {} # Retorna um dicionário vazio se o usuário não estiver logado
 
     conn = get_db_connection()
-    user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': session['user_id']}).fetchone()
+    user_id = session['user_id']
+    
+    # Consulta 1 - CORRIGIDA
+    user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
     
     if not user:
-        conn.close(); return {}
+        conn.close()
+        return {}
 
     # Admin tem envios ilimitados
     if user['role'] == 'admin':
-        conn.close(); return dict(daily_limit=-1, sends_remaining=-1)
+        conn.close()
+        return dict(daily_limit=-1, sends_remaining=-1)
 
-    plan = conn.execute("SELECT daily_send_limit FROM plans WHERE id = ?", (user['plan_id'],)).fetchone() if user['plan_id'] else None
+    # Consulta 2 - CORRIGIDA
+    plan = None
+    if user['plan_id']:
+        plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :plan_id"), {'plan_id': user['plan_id']}).mappings().fetchone()
     
     # Se o usuário não tem plano (Free) ou o plano não tem limite definido
     daily_limit = plan['daily_send_limit'] if plan else 25
 
     if daily_limit == -1:
-        conn.close(); return dict(daily_limit=-1, sends_remaining=-1)
+        conn.close()
+        return dict(daily_limit=-1, sends_remaining=-1)
 
     sends_today = 0
-    if user['last_send_date'] == datetime.now().strftime('%Y-%m-%d'):
+    # Acessando 'last_send_date' e 'sends_today' do objeto 'user' que já é um mapping
+    if user['last_send_date'] and user['last_send_date'].strftime('%Y-%m-%d') == datetime.now().strftime('%Y-%m-%d'):
         sends_today = user['sends_today']
     
     sends_remaining = daily_limit - sends_today
