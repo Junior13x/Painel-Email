@@ -1,101 +1,52 @@
 {% extends "base.html" %}
 
-{% block title %}Gerenciar Utilizadores{% endblock %}
+{% block title %}Editar Usuário - {{ user.email }}{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center">
-    <h1>Gerenciar Utilizadores</h1>
-    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
-</div>
-<p>Crie e gerencie as contas de acesso para o painel.</p>
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8 col-lg-6">
+            <div class="card shadow-sm">
+                <div class="card-header bg-primary text-white">
+                    <h2 class="h4 mb-0">Editar Usuário: <span class="fw-light">{{ user.email }}</span></h2>
+                </div>
+                <div class="card-body">
+                    <p><strong>ID do Usuário:</strong> {{ user.id }}</p>
+                    <p><strong>Nível de Acesso:</strong> <span class="badge bg-secondary">{{ user.role }}</span></p>
+                    
+                    <hr>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-  {% if messages %}
-    {% for category, message in messages %}
-      <div class="alert alert-{{ category }} mt-3">{{ message }}</div>
-    {% endfor %}
-  {% endif %}
-{% endwith %}
+                    <form action="{{ url_for('edit_user_page', user_id=user.id) }}" method="POST">
+                        <div class="mb-3">
+                            <label for="plan_id" class="form-label fw-bold">Plano Atual</label>
+                            <select class="form-select" id="plan_id" name="plan_id">
+                                <option value="free" {% if not user.plan_id %}selected{% endif %}>-- Grátis (Sem Plano) --</option>
+                                {% for plan in all_plans %}
+                                    <option value="{{ plan.id }}" {% if user.plan_id == plan.id %}selected{% endif %}>
+                                        {{ plan.name }} (R$ {{ "%.2f"|format(plan.price) }})
+                                    </option>
+                                {% endfor %}
+                            </select>
+                            <div class="form-text">
+                                Selecione o plano que deseja atribuir a este usuário.
+                            </div>
+                        </div>
 
-<hr>
+                        <div class="mb-3">
+                            <label for="validity_days" class="form-label">Adicionar Dias de Validade</label>
+                            <input type="number" class="form-control" id="validity_days" name="validity_days" value="30" placeholder="Ex: 30">
+                            <div class="form-text">
+                                Se um plano for selecionado, esses dias serão somados à data atual para definir a nova data de expiração.
+                            </div>
+                        </div>
 
-<div class="row g-5">
-    <!-- Coluna do Formulário -->
-    <div class="col-md-5">
-        <h4>Criar Novo Utilizador</h4>
-        <div class="card">
-            <div class="card-body">
-                <form method="POST" action="{{ url_for('users_page') }}">
-                    <div class="mb-3">
-                        <label for="email" class="form-label">E-mail do Utilizador</label>
-                        <input type="email" class="form-control" id="email" name="email" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="password" class="form-label">Senha</label>
-                        <input type="password" class="form-control" id="password" name="password" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="role" class="form-label">Nível</label>
-                        <select class="form-select" id="role" name="role">
-                            <option value="user" selected>Utilizador</option>
-                            <option value="admin">Admin</option>
-                        </select>
-                    </div>
-                    <button type="submit" class="btn btn-primary mt-3">Criar Utilizador</button>
-                </form>
+                        <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-4">
+                             <a href="{{ url_for('users_page') }}" class="btn btn-secondary me-md-2">Cancelar</a>
+                            <button type="submit" class="btn btn-primary">Salvar Alterações</button>
+                        </div>
+                    </form>
+                </div>
             </div>
-        </div>
-    </div>
-    
-    <!-- Coluna da Lista de Utilizadores -->
-    <div class="col-md-7">
-        <h4>Utilizadores Cadastrados</h4>
-        <div class="table-responsive">
-            <table class="table table-striped table-hover align-middle">
-                <thead>
-                    <tr>
-                        <th>Email</th>
-                        <th>Plano</th>
-                        <th>Envios Hoje</th>
-                        <th>Ações</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for user in users %}
-                    <tr>
-                        <td>
-                            {{ user.email }}
-                            {% if user.role == 'admin' %}
-                                <span class="badge bg-danger">Admin</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if user.plan_id %}
-                                <span class="badge bg-success">VIP</span>
-                            {% else %}
-                                <span class="badge bg-secondary">Free</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            <!-- NOVO CONTADOR DE ENVIOS DIÁRIOS -->
-                            <span class="badge bg-info">{{ user.sends_today_count }}</span>
-                        </td>
-                        <td>
-                            <a href="{{ url_for('edit_user_page', user_id=user.id) }}" class="btn btn-sm btn-outline-primary">Editar</a>
-                            {% if session.get('user_id') != user.id %}
-                            <form action="{{ url_for('delete_user', user_id=user.id) }}" method="POST" class="d-inline" onsubmit="return confirm('Tem certeza?');">
-                                <button type="submit" class="btn btn-sm btn-outline-danger">Excluir</button>
-                            </form>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr>
-                        <td colspan="4" class="text-center text-muted">Nenhum utilizador cadastrado.</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
         </div>
     </div>
 </div>
