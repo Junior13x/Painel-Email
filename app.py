@@ -378,24 +378,43 @@ def edit_user_page(user_id):
     try:
         conn = get_db_connection()
         if request.method == 'POST':
-            plan_id_str, validity_days_str = request.form.get('plan_id'), request.form.get('validity_days')
+            # --- DEBUGGING ---
+            plan_id_from_form = request.form.get('plan_id')
+            print(f"--- Formulário de Edição Recebido ---")
+            print(f"Valor recebido para 'plan_id': '{plan_id_from_form}' (Tipo: {type(plan_id_from_form)})")
+            
             with conn.begin():
-                if not plan_id_str or plan_id_str == 'free':
+                if not plan_id_from_form or plan_id_from_form == 'free':
                     conn.execute(text("UPDATE users SET plan_id = NULL, plan_expiration_date = NULL WHERE id = :uid"), {'uid': user_id})
                     flash(f"Usuário ID {user_id} definido como Grátis.", "info")
                 else:
-                    validity_days = int(validity_days_str or 30)
-                    expiration_date = datetime.now() + timedelta(days=validity_days)
-                    conn.execute(text("UPDATE users SET plan_id = :pid, plan_expiration_date = :exp WHERE id = :uid"), {'pid': int(plan_id_str), 'exp': expiration_date.date(), 'uid': user_id})
-                    plan_name = conn.execute(text("SELECT name FROM plans WHERE id = :pid"), {'pid': int(plan_id_str)}).scalar_one_or_none() or "desconhecido"
-                    flash(f"Usuário ID {user_id} atualizado para o plano '{plan_name}'!", "success")
+                    try:
+                        plan_id = int(plan_id_from_form)
+                        validity_days_str = request.form.get('validity_days')
+                        validity_days = int(validity_days_str or 30)
+                        expiration_date = datetime.now() + timedelta(days=validity_days)
+                        
+                        conn.execute(text("UPDATE users SET plan_id = :pid, plan_expiration_date = :exp WHERE id = :uid"), 
+                                     {'pid': plan_id, 'exp': expiration_date.date(), 'uid': user_id})
+                        
+                        plan_name = conn.execute(text("SELECT name FROM plans WHERE id = :pid"), {'pid': plan_id}).scalar_one_or_none() or "desconhecido"
+                        flash(f"Sucesso! Usuário ID {user_id} atualizado para o plano '{plan_name}'.", "success")
+                    except (ValueError, TypeError) as e:
+                        flash(f"ERRO: Valor inválido recebido para o ID do plano: '{plan_id_from_form}'. A alteração não foi salva. Erro: {e}", "danger")
+                        raise
+
             return redirect(url_for('users_page'))
+
+        # GET request logic
         user = conn.execute(text("SELECT * FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
         all_plans = conn.execute(text("SELECT * FROM plans WHERE is_active = TRUE")).mappings().fetchall()
         if not user:
             flash("Usuário não encontrado.", "warning")
             return redirect(url_for('users_page'))
         return render_template('edit_user.html', user=user, all_plans=all_plans)
+    except Exception as e:
+        flash(f"Ocorreu um erro inesperado: {e}", "danger")
+        return redirect(url_for('users_page'))
     finally:
         if conn: conn.close()
 
