@@ -378,43 +378,24 @@ def edit_user_page(user_id):
     try:
         conn = get_db_connection()
         if request.method == 'POST':
-            # --- DEBUGGING ---
-            plan_id_from_form = request.form.get('plan_id')
-            print(f"--- Formulário de Edição Recebido ---")
-            print(f"Valor recebido para 'plan_id': '{plan_id_from_form}' (Tipo: {type(plan_id_from_form)})")
-            
+            plan_id_str, validity_days_str = request.form.get('plan_id'), request.form.get('validity_days')
             with conn.begin():
-                if not plan_id_from_form or plan_id_from_form == 'free':
+                if not plan_id_str or plan_id_str == 'free':
                     conn.execute(text("UPDATE users SET plan_id = NULL, plan_expiration_date = NULL WHERE id = :uid"), {'uid': user_id})
                     flash(f"Usuário ID {user_id} definido como Grátis.", "info")
                 else:
-                    try:
-                        plan_id = int(plan_id_from_form)
-                        validity_days_str = request.form.get('validity_days')
-                        validity_days = int(validity_days_str or 30)
-                        expiration_date = datetime.now() + timedelta(days=validity_days)
-                        
-                        conn.execute(text("UPDATE users SET plan_id = :pid, plan_expiration_date = :exp WHERE id = :uid"), 
-                                     {'pid': plan_id, 'exp': expiration_date.date(), 'uid': user_id})
-                        
-                        plan_name = conn.execute(text("SELECT name FROM plans WHERE id = :pid"), {'pid': plan_id}).scalar_one_or_none() or "desconhecido"
-                        flash(f"Sucesso! Usuário ID {user_id} atualizado para o plano '{plan_name}'.", "success")
-                    except (ValueError, TypeError) as e:
-                        flash(f"ERRO: Valor inválido recebido para o ID do plano: '{plan_id_from_form}'. A alteração não foi salva. Erro: {e}", "danger")
-                        raise
-
+                    validity_days = int(validity_days_str or 30)
+                    expiration_date = datetime.now() + timedelta(days=validity_days)
+                    conn.execute(text("UPDATE users SET plan_id = :pid, plan_expiration_date = :exp WHERE id = :uid"), {'pid': int(plan_id_str), 'exp': expiration_date.date(), 'uid': user_id})
+                    plan_name = conn.execute(text("SELECT name FROM plans WHERE id = :pid"), {'pid': int(plan_id_str)}).scalar_one_or_none() or "desconhecido"
+                    flash(f"Usuário ID {user_id} atualizado para o plano '{plan_name}'!", "success")
             return redirect(url_for('users_page'))
-
-        # GET request logic
         user = conn.execute(text("SELECT * FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
         all_plans = conn.execute(text("SELECT * FROM plans WHERE is_active = TRUE")).mappings().fetchall()
         if not user:
             flash("Usuário não encontrado.", "warning")
             return redirect(url_for('users_page'))
         return render_template('edit_user.html', user=user, all_plans=all_plans)
-    except Exception as e:
-        flash(f"Ocorreu um erro inesperado: {e}", "danger")
-        return redirect(url_for('users_page'))
     finally:
         if conn: conn.close()
 
@@ -445,16 +426,19 @@ def manage_plans_page():
         if request.method == 'POST':
             name, price, validity, limit = request.form.get('name'), float(request.form.get('price', 0)), int(request.form.get('validity_days', 30)), int(request.form.get('daily_send_limit', 50))
             features = request.form.getlist('features')
-            if name:
+            if not name:
+                flash("O nome do plano é obrigatório.", "danger")
+            elif not features:
+                 flash("Atenção: Você deve selecionar pelo menos um recurso para o plano.", "warning")
+            else:
                 with conn.begin():
                     result = conn.execute(text("INSERT INTO plans (name, price, validity_days, daily_send_limit) VALUES (:n, :p, :v, :l) RETURNING id"), {'n': name, 'p': price, 'v': validity, 'l': limit})
                     new_plan_id = result.scalar_one()
                     for fid in features:
                         conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, :fid)"), {'pid': new_plan_id, 'fid': int(fid)})
-                flash(f"Plano '{name}' criado!", "success")
-            else:
-                flash("O nome do plano é obrigatório.", "danger")
+                flash(f"Plano '{name}' criado com sucesso!", "success")
             return redirect(url_for('manage_plans_page'))
+        
         plans = conn.execute(text("SELECT p.*, (SELECT COUNT(*) FROM plan_features pf WHERE pf.plan_id = p.id) as feature_count FROM plans p ORDER BY p.price")).mappings().fetchall()
         features = conn.execute(text("SELECT * FROM features ORDER BY id")).mappings().fetchall()
         return render_template('manage_plans.html', plans=plans, all_features=features)
