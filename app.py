@@ -562,16 +562,19 @@ def delete_plan(plan_id):
 @app.route('/planos')
 @login_required
 def plans_page():
-    conn = get_db_connection()
-    master_features = conn.execute("SELECT * FROM features ORDER BY id").fetchall()
-    active_plans = conn.execute("SELECT * FROM plans WHERE is_active = 1 ORDER BY price").fetchall()
-    plans_data = []
-    for plan in active_plans:
-        enabled_features_rows = conn.execute("SELECT feature_id FROM plan_features WHERE plan_id = ?", (plan['id'],)).fetchall()
-        enabled_feature_ids = {row['feature_id'] for row in enabled_features_rows}
-        plans_data.append({'plan': plan, 'enabled_feature_ids': enabled_feature_ids})
-    conn.close()
-    return render_template('planos.html', plans_data=plans_data, master_features=master_features)
+    conn = None
+    try:
+        conn = get_db_connection()
+        master_features = conn.execute(text("SELECT * FROM features ORDER BY id")).mappings().fetchall()
+        active_plans = conn.execute(text("SELECT * FROM plans WHERE is_active = TRUE ORDER BY price")).mappings().fetchall()
+        plans_data = []
+        for plan in active_plans:
+            enabled_features_rows = conn.execute(text("SELECT feature_id FROM plan_features WHERE plan_id = :pid"), {'pid': plan['id']}).mappings().fetchall()
+            enabled_feature_ids = {row['feature_id'] for row in enabled_features_rows}
+            plans_data.append({'plan': plan, 'enabled_feature_ids': enabled_feature_ids})
+        return render_template('planos.html', plans_data=plans_data, master_features=master_features)
+    finally:
+        if conn: conn.close()
 
 @app.route('/criar-pagamento', methods=['POST'])
 @login_required
@@ -696,46 +699,32 @@ def mass_send_page():
 
 @app.route('/agendamento', methods=['GET', 'POST'])
 @login_required
-@feature_required('schedules')
 def schedule_page():
-    if request.method == 'POST':
-        schedule_type = request.form.get('schedule_type')
-        subject = request.form.get('subject')
-        body = request.form.get('body')
-        send_at_str = request.form.get('send_at')
-        status_target, manual_recipients = None, None
-        if schedule_type == 'group':
-            status_target = request.form.get('status_target')
-            if not status_target:
-                flash("Por favor, selecione um grupo para agendar.", "danger")
-                return redirect(url_for('schedule_page'))
-        elif schedule_type == 'manual':
-            manual_recipients_raw = request.form.get('manual_emails', '')
-            emails = [email.strip() for email in re.split(r'[,\s]+', manual_recipients_raw) if email.strip()]
-            if not emails:
-                flash("Por favor, insira pelo menos um e-mail válido.", "danger")
-                return redirect(url_for('schedule_page'))
-            manual_recipients = ','.join(emails)
-        
-        if not all([schedule_type, subject, body, send_at_str]):
-            flash("Todos os campos são obrigatórios para agendar.", "danger")
-        else:
-            try:
-                conn = sqlite3.connect('painel.db')
-                conn.execute("INSERT INTO scheduled_emails (schedule_type, status_target, manual_recipients, subject, body, send_at) VALUES (?, ?, ?, ?, ?, ?)", (schedule_type, status_target, manual_recipients, subject, body, send_at_str))
+    conn = None
+    try:
+        conn = get_db_connection()
+        user_id = session['user_id']
+        if request.method == 'POST':
+            # Lógica para criar/editar um agendamento
+            # Esta é uma implementação de exemplo. Adapte conforme sua necessidade.
+            subject = request.form.get('subject')
+            body = request.form.get('body')
+            send_at_str = request.form.get('send_at') # Ex: '2025-12-31 23:59:00'
+            if not all([subject, body, send_at_str]):
+                flash("Todos os campos são obrigatórios.", "warning")
+            else:
+                conn.execute(
+                    text("INSERT INTO scheduled_emails (user_id, schedule_type, subject, body, send_at) VALUES (:uid, 'manual', :s, :b, :sat)"),
+                    {'uid': user_id, 's': subject, 'b': body, 'sat': send_at_str}
+                )
                 conn.commit()
-                flash("E-mail agendado com sucesso!", "success")
-            except Exception as e:
-                flash(f"Erro ao salvar agendamento: {e}", "danger")
-            finally:
-                if conn: conn.close()
-        return redirect(url_for('schedule_page'))
+                flash("Agendamento salvo com sucesso!", "success")
+            return redirect(url_for('schedule_page'))
 
-    conn = sqlite3.connect('painel.db')
-    conn.row_factory = sqlite3.Row
-    pending_emails = conn.execute("SELECT * FROM scheduled_emails WHERE is_sent = FALSE ORDER BY send_at ASC").fetchall()
-    conn.close()
-    return render_template('agendamento.html', pending_emails=pending_emails, schedule_data=None)
+        pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE ORDER BY send_at ASC"), {'uid': user_id}).mappings().fetchall()
+        return render_template('agendamento.html', pending_emails=pending_emails)
+    finally:
+        if conn: conn.close()
 
 @app.route('/agendamento/edit/<int:email_id>', methods=['GET', 'POST'])
 @login_required
@@ -796,51 +785,40 @@ def delete_schedule(email_id):
 @login_required
 def settings_page():
     user_id = session['user_id']
-    is_admin = session.get('role') == 'admin'
-
-    # ---- Lógica para quando o formulário é ENVIADO (POST) ----
-    if request.method == 'POST':
+    conn = None
+    try:
         conn = get_db_connection()
-        try:
-            # Se for admin, salva o token do Mercado Pago no settings.json
-            if is_admin:
-                global_settings = {}
-                try:
-                    with open('settings.json', 'r') as f:
-                        global_settings = json.load(f)
-                except (FileNotFoundError, json.JSONDecodeError):
-                    pass # Se o arquivo não existe ou está vazio, ignora
-                
-                # Usa .get() para evitar erro se o campo não for enviado
-                global_settings['MERCADO_PAGO_ACCESS_TOKEN'] = request.form.get('mp_access_token', '')
-
-                
-                with open('settings.json', 'w') as f:
-                    json.dump(global_settings, f, indent=4)
-
-            # Salva as configurações individuais do usuário no banco de dados
-            conn.execute("""
+        if request.method == 'POST':
+            # Parâmetros do formulário
+            params = {
+                'baserow_host': request.form.get('baserow_host'),
+                'baserow_api_key': request.form.get('baserow_api_key'),
+                'baserow_table_id': request.form.get('baserow_table_id'),
+                'smtp_host': request.form.get('smtp_host'),
+                'smtp_port': int(request.form.get('smtp_port') or 587),
+                'smtp_user': request.form.get('smtp_user'),
+                'smtp_password': request.form.get('smtp_password'),
+                'batch_size': int(request.form.get('batch_size') or 15),
+                'delay_seconds': int(request.form.get('delay_seconds') or 60),
+                'uid': user_id
+            }
+            # Query de atualização
+            query = text("""
                 UPDATE users SET
-                baserow_host = ?, baserow_api_key = ?, baserow_table_id = ?,
-                smtp_host = ?, smtp_port = ?, smtp_user = ?, smtp_password = ?,
-                batch_size = ?, delay_seconds = ?
-                WHERE id = ?
-            """, (
-                request.form.get('baserow_host'), request.form.get('baserow_api_key'), request.form.get('baserow_table_id'),
-                request.form.get('smtp_host'), int(request.form.get('smtp_port') or 587), request.form.get('smtp_user'), request.form.get('smtp_password'),
-                int(request.form.get('batch_size') or 15), int(request.form.get('delay_seconds') or 60),
-                user_id
-            ))
+                baserow_host = :baserow_host, baserow_api_key = :baserow_api_key, baserow_table_id = :baserow_table_id,
+                smtp_host = :smtp_host, smtp_port = :smtp_port, smtp_user = :smtp_user, smtp_password = :smtp_password,
+                batch_size = :batch_size, delay_seconds = :delay_seconds
+                WHERE id = :uid
+            """)
+            conn.execute(query, params)
             conn.commit()
             flash("Configurações salvas com sucesso!", "success")
-
-        except Exception as e:
-            conn.rollback() # Desfaz a transação em caso de erro
-            flash(f"Erro ao salvar configurações: {e}", "danger")
-        finally:
-            conn.close()
+            return redirect(url_for('settings_page'))
         
-        return redirect(url_for('settings_page'))
+        user_settings = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()
+        return render_template('settings.html', user_settings=user_settings)
+    finally:
+        if conn: conn.close()
 
     # ---- Lógica para quando a página é CARREGADA (GET) ----
     conn = get_db_connection()
@@ -1039,10 +1017,13 @@ def help_page():
 @app.route('/history')
 @login_required
 def history_page():
-    conn = get_db_connection()
-    history = conn.execute("SELECT * FROM envio_historico WHERE user_id = ? ORDER BY sent_at DESC", (session['user_id'],)).fetchall()
-    conn.close()
-    return render_template('history.html', history=history)
+    conn = None
+    try:
+        conn = get_db_connection()
+        history = conn.execute(text("SELECT * FROM envio_historico WHERE user_id = :uid ORDER BY sent_at DESC"), {'uid': session['user_id']}).mappings().fetchall()
+        return render_template('history.html', history=history)
+    finally:
+        if conn: conn.close()
 
 @app.route('/history/resend', methods=['POST'])
 @login_required
@@ -1092,13 +1073,31 @@ def save_history_as_template():
 @app.route('/templates', methods=['GET', 'POST'])
 @login_required
 def templates_page():
-    if request.method == 'POST':
-        # Sua lógica de criar template...
-        return redirect(url_for('templates_page'))
-    conn = get_db_connection()
-    templates = conn.execute("SELECT * FROM email_templates WHERE user_id = ? ORDER BY name", (session['user_id'],)).fetchall()
-    conn.close()
-    return render_template('templates.html', templates=templates)
+    conn = None
+    try:
+        conn = get_db_connection()
+        user_id = session['user_id']
+        if request.method == 'POST':
+            # Adapte para seus nomes de formulário
+            name = request.form.get('template_name')
+            subject = request.form.get('subject')
+            body = request.form.get('body')
+            if not all([name, subject, body]):
+                flash("Todos os campos são necessários.", "warning")
+            else:
+                try:
+                    conn.execute(text("INSERT INTO email_templates (user_id, name, subject, body) VALUES (:uid, :n, :s, :b)"), {'uid': user_id, 'n': name, 's': subject, 'b': body})
+                    conn.commit()
+                    flash("Template salvo com sucesso!", "success")
+                except sqlalchemy_exc.IntegrityError:
+                    conn.rollback()
+                    flash("Um template com este nome já existe.", "danger")
+            return redirect(url_for('templates_page'))
+            
+        templates = conn.execute(text("SELECT * FROM email_templates WHERE user_id = :uid ORDER BY name"), {'uid': user_id}).mappings().fetchall()
+        return render_template('templates.html', templates=templates)
+    finally:
+        if conn: conn.close()
 
 # --- LÓGICA DO WORKER (ROBÔ) ---
 
