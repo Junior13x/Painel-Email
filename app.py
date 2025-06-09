@@ -483,6 +483,33 @@ def plans_page():
     finally:
         if conn: conn.close()
 
+@app.route('/verificar-status-plano')
+@login_required
+def check_plan_status():
+    conn = None
+    try:
+        conn = get_db_connection()
+        user = conn.execute(text("SELECT plan_id, plan_expiration_date FROM users WHERE id = :uid"), {'uid': session['user_id']}).mappings().fetchone()
+        
+        if not user:
+            return jsonify({'status': 'erro', 'message': 'Usuário não encontrado'}), 404
+
+        is_approved = (
+            user['plan_id'] is not None and
+            user['plan_expiration_date'] is not None and
+            user['plan_expiration_date'] >= datetime.now().date()
+        )
+        
+        if is_approved:
+            return jsonify({'status': 'aprovado'})
+        else:
+            return jsonify({'status': 'pendente'})
+    except Exception as e:
+        print(f"Erro em check_plan_status: {e}")
+        return jsonify({'status': 'erro', 'message': str(e)}), 500
+    finally:
+        if conn: conn.close()
+        
 @app.route('/criar-pagamento', methods=['POST'])
 @login_required
 def create_payment():
@@ -531,6 +558,7 @@ def create_payment():
         
         error_message_for_user = "Ocorreu um erro ao gerar a cobrança Pix."
         try:
+            # Tenta extrair a mensagem de erro específica da API do Mercado Pago
             sdk_error_body = json.loads(e.body)
             api_message = sdk_error_body.get("message", "Erro na API do MP.")
             causes = sdk_error_body.get("cause", [])
