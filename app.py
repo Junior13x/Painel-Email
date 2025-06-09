@@ -479,26 +479,35 @@ def users_page():
 @login_required
 @admin_required
 def edit_user_page(user_id):
-    conn = get_db_connection()
-    if request.method == 'POST':
-        plan_id_str, validity_days_str = request.form.get('plan_id'), request.form.get('validity_days')
-        if not plan_id_str or plan_id_str == 'free':
-            conn.execute("UPDATE users SET plan_id = NULL, plan_expiration_date = NULL WHERE id = ?", (user_id,))
-        else:
-            validity_days = int(validity_days_str) if validity_days_str and validity_days_str.isdigit() else 30
-            expiration_date = datetime.now() + timedelta(days=validity_days)
-            conn.execute("UPDATE users SET plan_id = ?, plan_expiration_date = ? WHERE id = ?", (int(plan_id_str), expiration_date.strftime('%Y-%m-%d'), user_id))
-        conn.commit()
-        flash(f"Usuário ID {user_id} atualizado com sucesso!", "success")
-        conn.close()
-        return redirect(url_for('users_page'))
-    user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    all_plans = conn.execute("SELECT * FROM plans WHERE is_active = 1").fetchall()
-    conn.close()
-    if not user:
-        flash("Usuário não encontrado.", "warning"); return redirect(url_for('users_page'))
-    return render_template('edit_user.html', user=user, all_plans=all_plans)
+    conn = None
+    try:
+        conn = get_db_connection()
+        if request.method == 'POST':
+            plan_id_str = request.form.get('plan_id')
+            validity_days_str = request.form.get('validity_days')
+            
+            if not plan_id_str or plan_id_str == 'free':
+                conn.execute(text("UPDATE users SET plan_id = NULL, plan_expiration_date = NULL WHERE id = :uid"), {'uid': user_id})
+            else:
+                validity_days = int(validity_days_str) if validity_days_str and validity_days_str.isdigit() else 30
+                expiration_date = datetime.now() + timedelta(days=validity_days)
+                conn.execute(
+                    text("UPDATE users SET plan_id = :pid, plan_expiration_date = :exp_date WHERE id = :uid"),
+                    {'pid': int(plan_id_str), 'exp_date': expiration_date.strftime('%Y-%m-%d'), 'uid': user_id}
+                )
+            conn.commit()
+            flash(f"Usuário ID {user_id} atualizado com sucesso!", "success")
+            return redirect(url_for('users_page'))
 
+        user = conn.execute(text("SELECT * FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
+        all_plans = conn.execute(text("SELECT * FROM plans WHERE is_active = TRUE")).mappings().fetchall()
+        if not user:
+            flash("Usuário não encontrado.", "warning")
+            return redirect(url_for('users_page'))
+        return render_template('edit_user.html', user=user, all_plans=all_plans)
+    finally:
+        if conn: conn.close()
+        
 @app.route('/users/delete/<int:user_id>', methods=['POST'])
 @login_required
 @admin_required
@@ -646,11 +655,12 @@ def mass_send_page():
             return redirect(url_for('mass_send_page'))
         
         templates = conn.execute(text("SELECT * FROM email_templates WHERE user_id = :uid ORDER BY name"), {'uid': user_id}).mappings().fetchall()
-        return render_template('envio-em-massa.html', contacts=[], error=None, templates=templates)
+        return render_template('envio_em_massa.html', contacts=[], error=None, templates=templates)
     except jinja2.exceptions.TemplateNotFound:
         return "Erro: Template 'envio-em-massa.html' não encontrado. Verifique o nome do arquivo.", 404
     finally:
         if conn: conn.close()
+
 
 @app.route('/agendamento', methods=['GET', 'POST'])
 @login_required
@@ -1023,7 +1033,7 @@ def templates_page():
         return render_template('templates.html', templates=templates)
     finally:
         if conn: conn.close()
-
+s
 
 # --- LÓGICA DO WORKER (ROBÔ) ---
 
