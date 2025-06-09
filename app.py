@@ -110,9 +110,9 @@ def init_db_command():
     init_db_logic()
 
 # ===============================================================
-# == ROTA SECRETA PARA INICIALIZAÇÃO DO BANCO DE DADOS ==
+# == ROTAS DE DEBBUGING E INICIALIZAÇÃO ==
 # ===============================================================
-@app.route('/run-db-initialization-once/meu-reset-secreto-1308')
+@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
 def secret_init_db():
     try:
         init_db_logic()
@@ -123,6 +123,18 @@ def secret_init_db():
         message = f"Erro ao reinicializar o banco de dados: {e}"
         flash(message, "danger")
         return f"<h1>Erro</h1><p>{message}</p>", 500
+
+@app.route('/debug-features')
+def debug_features():
+    conn = None
+    try:
+        conn = get_db_connection()
+        features = conn.execute(text("SELECT * FROM features")).mappings().fetchall()
+        return jsonify([dict(f) for f in features])
+    except Exception as e:
+        return f"Erro ao buscar features: {e}", 500
+    finally:
+        if conn: conn.close()
 
 # ===============================================================
 # == DECORATORS (AUTENTICAÇÃO E PERMISSÕES) ==
