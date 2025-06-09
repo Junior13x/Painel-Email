@@ -435,6 +435,22 @@ def manage_plans_page():
     finally:
         if conn: conn.close()
 
+@app.route('/admin/plans/delete/<int:plan_id>', methods=['POST'])
+@login_required
+@admin_required
+def delete_plan(plan_id):
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.begin():
+            conn.execute(text("DELETE FROM plans WHERE id = :pid"), {'pid': plan_id})
+        flash("Plano excluído com sucesso.", "info")
+    except Exception as e:
+        flash(f"Erro ao excluir plano: {e}", "danger")
+    finally:
+        if conn: conn.close()
+    return redirect(url_for('manage_plans_page'))
+
 # --- ROTAS DE PLANOS E PAGAMENTOS ---
 @app.route('/planos')
 @login_required
@@ -904,4 +920,4 @@ def start_background_worker():
 print("Disparando greenlet para o background worker...")
 gevent.spawn(start_background_worker)
 
-# O Gunicorn assume o controle a partir daqui. Não use app.run()
+# O Gunicorn assume o controle a partir daqui. Não use app.run().
