@@ -584,12 +584,25 @@ def settings_page():
         conn = get_db_connection()
         if request.method == 'POST':
             with conn.begin():
-                update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user', 'automations_config']}
+                # Lógica para salvar as configurações de automação como JSON
+                automations = {
+                    'welcome': {'enabled': 'welcome_enabled' in request.form, 'subject': request.form.get('welcome_subject'), 'body': request.form.get('welcome_body')},
+                    'expiry': {
+                        'enabled': 'expiry_enabled' in request.form,
+                        'subject_7_days': request.form.get('expiry_7_days_subject'), 'body_7_days': request.form.get('expiry_7_days_body'),
+                        'subject_3_days': request.form.get('expiry_3_days_subject'), 'body_3_days': request.form.get('expiry_3_days_body'),
+                        'subject_1_day': request.form.get('expiry_1_day_subject'), 'body_1_day': request.form.get('expiry_1_day_body')
+                    }
+                }
+                
+                update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user']}
                 update_fields.update({
                     'smtp_port': int(request.form.get('smtp_port') or 587),
                     'batch_size': int(request.form.get('batch_size') or 15),
-                    'delay_seconds': int(request.form.get('delay_seconds') or 60)
+                    'delay_seconds': int(request.form.get('delay_seconds') or 60),
+                    'automations_config': json.dumps(automations) # Converte o dicionário para string JSON
                 })
+
                 set_clauses = [f"{key} = :{key}" for key in update_fields]
                 if request.form.get('smtp_password'):
                     set_clauses.append("smtp_password = :smtp_password")
@@ -597,12 +610,20 @@ def settings_page():
                 
                 conn.execute(text(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = {user_id}"), update_fields)
             flash("Configurações salvas!", "success")
+            return redirect(url_for('settings_page'))
         
-        user_settings = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()
+        user_settings_row = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()
+        user_settings = dict(user_settings_row) if user_settings_row else {}
+        # Carrega o JSON de automações para o template
+        if user_settings.get('automations_config'):
+            user_settings['automations_config'] = json.loads(user_settings['automations_config'])
+        else:
+            user_settings['automations_config'] = {} # Garante que não é None
+
         return render_template('settings.html', user_settings=user_settings)
     except Exception as e:
-        flash(f"Erro ao salvar: {e}", "danger")
-        return redirect(url_for('settings_page'))
+        flash(f"Erro ao salvar/carregar configurações: {e}", "danger")
+        return redirect(url_for('dashboard')) # Redireciona para um lugar seguro
     finally:
         if conn: conn.close()
 
@@ -883,4 +904,4 @@ def start_background_worker():
 print("Disparando greenlet para o background worker...")
 gevent.spawn(start_background_worker)
 
-# O Gunicorn assume o controle a partir daqui. Não use app.run
+# O Gunicorn assume o controle a partir daqui. Não use app.run()
