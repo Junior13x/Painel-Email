@@ -59,7 +59,7 @@ def init_db_command():
             conn.execute(text("""
                 CREATE TABLE users (
                     id SERIAL PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL DEFAULT 'user', plan_id INTEGER REFERENCES plans(id), plan_expiration_date DATE,
+                    role TEXT NOT NULL DEFAULT 'user', plan_id INTEGER, plan_expiration_date DATE,
                     baserow_host TEXT, baserow_api_key TEXT, baserow_table_id TEXT,
                     smtp_host TEXT, smtp_port INTEGER, smtp_user TEXT, smtp_password TEXT,
                     batch_size INTEGER, delay_seconds INTEGER, automations_config TEXT,
@@ -80,6 +80,9 @@ def init_db_command():
             default_email = 'junior@admin.com'
             default_pass = '130896'
             password_hash = generate_password_hash(default_pass)
+            # Adiciona a referência ao plano 'plans' que será criado a seguir.
+            # Assume-se que um plano para admin será criado ou que o admin não precisa de um plano específico para operar.
+            # Para simplificar, o admin não terá um plan_id. Sua lógica de permissão já cuida disso.
             conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"), {'email': default_email, 'password_hash': password_hash})
             print(f"ADMIN PADRÃO CRIADO! E-mail: {default_email} | Senha: {default_pass}")
         
@@ -159,7 +162,6 @@ def inject_user_info():
             session.clear()
             return {}
         
-        # Status do Plano
         plan_status = {'plan_name': 'Grátis', 'badge_class': 'secondary', 'days_left': None}
         if user['role'] == 'admin':
             plan_status = {'plan_name': 'Admin', 'badge_class': 'danger', 'days_left': 9999}
@@ -173,11 +175,10 @@ def inject_user_info():
             else:
                 plan_status = {'plan_name': f"{plan_name} (Expirado)", 'badge_class': 'warning', 'days_left': days_left}
         
-        # Limite de Envios
-        sends_remaining = -1 # Ilimitado por padrão (para admin)
+        sends_remaining = -1
         if user['role'] != 'admin':
             plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
-            daily_limit = plan['daily_send_limit'] if plan else 25 # Padrão para plano grátis
+            daily_limit = plan['daily_send_limit'] if plan else 25
             sends_today = 0
             if user['last_send_date'] and user['last_send_date'] == datetime.now().date():
                 sends_today = user['sends_today']
@@ -595,7 +596,8 @@ def mass_send_page():
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
 def settings_page():
-    user_id, conn = session['user_id'], None
+    user_id = session['user_id']
+    conn = None
     try:
         conn = get_db_connection()
         if request.method == 'POST':
@@ -624,24 +626,36 @@ def settings_page():
                     set_clauses.append("smtp_password = :smtp_password")
                     update_fields['smtp_password'] = request.form.get('smtp_password')
                 
-                conn.execute(text(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = {user_id}"), update_fields)
+                # Correção: id do usuário deve ser passado como parâmetro
+                update_fields['user_id'] = user_id
+                set_clauses_str = ", ".join(set_clauses)
+                query = text(f"UPDATE users SET {set_clauses_str} WHERE id = :user_id")
+                
+                conn.execute(query, update_fields)
+
             flash("Configurações salvas!", "success")
             return redirect(url_for('settings_page'))
         
+        # Lógica GET
         user_settings_row = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()
         user_settings = dict(user_settings_row) if user_settings_row else {}
-        # Carrega o JSON de automações para o template
+        
         if user_settings.get('automations_config'):
             user_settings['automations_config'] = json.loads(user_settings['automations_config'])
         else:
-            user_settings['automations_config'] = {} # Garante que não é None
+            user_settings['automations_config'] = {}
 
         return render_template('settings.html', user_settings=user_settings)
+    
     except Exception as e:
         flash(f"Erro ao salvar/carregar configurações: {e}", "danger")
-        return redirect(url_for('dashboard')) # Redireciona para um lugar seguro
+        # Mesmo com erro, tenta renderizar a página com o que for possível
+        user_settings = {} # Evita outro erro no template
+        return render_template('settings.html', user_settings=user_settings)
+    
     finally:
         if conn: conn.close()
+
 
 @app.route('/history')
 @login_required
@@ -920,4 +934,4 @@ def start_background_worker():
 print("Disparando greenlet para o background worker...")
 gevent.spawn(start_background_worker)
 
-# O Gunicorn assume o controle a partir daqui. Não use app.run
+# O Gunicorn assume o controle a partir daqui. Não use app.run()
