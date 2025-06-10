@@ -1140,11 +1140,10 @@ def worker_check_and_run_automations(user_settings, all_contacts_processed, conn
 
 def worker_main_loop():
     """Loop principal do worker, agora com todas as tarefas."""
-    log_to_db('INFO', "--- Worker de Fundo Iniciado ---")
+    print("--- Worker de Fundo Iniciado ---")
     self_url = os.environ.get('RENDER_EXTERNAL_URL')
     while True:
         gevent.sleep(300) 
-        conn = None
         try:
             log_to_db('WORKER', "Iniciando ciclo de verificação...")
             if self_url:
@@ -1154,38 +1153,49 @@ def worker_main_loop():
                     log_to_db('WARNING', f"Falha no auto-ping: {e}")
             
             conn = get_db_connection()
-            active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
-            
-            if not active_users: 
-                log_to_db('WORKER', "Nenhum usuário ativo encontrado.")
-            else: 
-                log_to_db('WORKER', f"Encontrados {len(active_users)} usuários ativos para processar.")
-            
-            for user in active_users:
-                user_settings = dict(user)
-                log_to_db('WORKER', f"--- Processando para: {user_settings['email']} ---")
-                if user_settings['role'] != 'admin' and not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
-                    log_to_db('WARNING', f"Configurações do usuário {user_settings['email']} incompletas. Pulando.")
-                    continue
-                try:
-                    with conn.begin():
+            try:
+                active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
+                
+                if not active_users: 
+                    log_to_db('WORKER', "Nenhum usuário ativo encontrado.")
+                else: 
+                    log_to_db('WORKER', f"Encontrados {len(active_users)} usuários ativos para processar.")
+                
+                for user in active_users:
+                    user_settings = dict(user)
+                    log_to_db('WORKER', f"--- Processando para: {user_settings['email']} ---")
+                    
+                    if user_settings['role'] != 'admin' and not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
+                        log_to_db('WARNING', f"Configurações do usuário {user_settings['email']} incompletas. Pulando.")
+                        continue
+                    
+                    try:
                         worker_process_mass_send_jobs(user_settings, conn)
                         all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
                         worker_process_pending_schedules(user_settings, all_contacts, conn)
                         worker_check_and_run_automations(user_settings, all_contacts, conn)
-                except Exception as e:
-                    log_to_db('ERROR', f"Erro ao processar para o usuário {user_settings['email']}: {e}")
+                    except Exception as e:
+                        log_to_db('ERROR', f"Erro ao processar tarefas para o usuário {user_settings['email']}: {e}")
 
-            log_to_db('WORKER', "Ciclo do worker concluído.")
+                log_to_db('WORKER', "Ciclo do worker concluído.")
+            finally:
+                if conn and not conn.closed:
+                    conn.close()
+
         except Exception as e:
             log_to_db('CRITICAL', f"ERRO CRÍTICO NO WORKER: {e}")
-        finally:
-            if conn and not conn.closed:
-                conn.close()
 
 def start_background_worker():
     print("Disparando greenlet para o background worker...")
     gevent.spawn(worker_main_loop)
+
+worker_started = False
+@app.before_request
+def start_worker_once():
+    global worker_started
+    if not worker_started:
+        start_background_worker()
+        worker_started = True
 
 worker_started = False
 @app.before_request
