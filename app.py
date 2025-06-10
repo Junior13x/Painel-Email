@@ -1197,12 +1197,4 @@ def start_worker_once():
         start_background_worker()
         worker_started = True
 
-worker_started = False
-@app.before_request
-def start_worker_once():
-    global worker_started
-    if not worker_started:
-        start_background_worker()
-        worker_started = True
-
 # O Gunicorn assume o controle a partir daqui. Não use app.run().
