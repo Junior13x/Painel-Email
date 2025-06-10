@@ -44,6 +44,21 @@ def get_db_connection():
     conn = engine.connect()
     return conn
 
+def log_to_db(level, message):
+    """Salva uma mensagem de log no banco de dados."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.begin():
+            conn.execute(
+                text("INSERT INTO app_logs (level, message) VALUES (:level, :message)"),
+                {'level': level, 'message': str(message)}
+            )
+    except Exception as e:
+        print(f"FALHA AO LOGAR PARA O BANCO DE DADOS: {e}")
+    finally:
+        if conn: conn.close()
+
 def init_db_logic():
     """Lógica de inicialização que pode ser chamada de qualquer lugar."""
     conn = None
@@ -51,7 +66,7 @@ def init_db_logic():
         conn = get_db_connection()
         with conn.begin(): # Transações garantem que ou tudo funciona ou nada é salvo.
             print("Conectado ao banco de dados. Iniciando a criação das tabelas...")
-            conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates, mass_send_jobs CASCADE;"))
+            conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates, mass_send_jobs, app_logs CASCADE;"))
             print("Tabelas antigas removidas (se existiam).")
 
             # --- Criação de Todas as Tabelas ---
@@ -88,6 +103,7 @@ def init_db_logic():
                     processed_at TIMESTAMP WITH TIME ZONE
                 );
             """))
+            conn.execute(text("CREATE TABLE app_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, level TEXT, message TEXT);"))
             print("Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
@@ -113,7 +129,7 @@ def init_db_logic():
         print("\nBanco de dados inicializado com sucesso!")
     except Exception as e:
         print(f"\nOcorreu um erro durante a inicialização do banco de dados: {e}")
-        raise # Levanta o erro para ser capturado na rota
+        raise
     finally:
         if conn and not conn.closed:
             conn.close()
@@ -121,7 +137,6 @@ def init_db_logic():
 
 @app.cli.command('init-db')
 def init_db_command():
-    """Comando para ser usado via linha de comando (como em um Job)."""
     init_db_logic()
 
 # ===============================================================
@@ -150,7 +165,7 @@ def debug_features():
         return f"Erro ao buscar features: {e}", 500
     finally:
         if conn: conn.close()
-        
+
 # ===============================================================
 # == DECORATORS (AUTENTICAÇÃO E PERMISSÕES) ==
 # ===============================================================
@@ -337,6 +352,7 @@ def send_emails_in_batches(recipients, subject, body, settings, user_id):
                 if i + batch_size < len(recipients): gevent.sleep(delay_seconds)
     except Exception as e:
         print(f"Erro crítico no envio em lote: {e}")
+        raise e # Re-levanta a exceção para ser capturada pelo worker
     finally:
         if conn: conn.close()
     return sent_count, fail_count
@@ -809,7 +825,12 @@ def history_details(history_id):
         ).mappings().fetchone()
         
         if entry:
-            return jsonify(dict(entry))
+            # Convertendo o objeto Row para um dicionário padrão antes de jsonify
+            entry_dict = dict(entry)
+            # Converte datetime para string ISO para ser serializável em JSON
+            if 'sent_at' in entry_dict and isinstance(entry_dict['sent_at'], datetime):
+                entry_dict['sent_at'] = entry_dict['sent_at'].isoformat()
+            return jsonify(entry_dict)
         else:
             return jsonify({'error': 'Registro não encontrado ou sem permissão.'}), 404
     except Exception as e:
@@ -835,8 +856,7 @@ def delete_history_entry(history_id):
     finally:
         if conn: conn.close()
     return redirect(url_for('history_page'))
-
-
+    
 @app.route('/history/resend', methods=['POST'])
 @login_required
 @feature_required('mass-send')
@@ -1009,30 +1029,33 @@ def worker_process_mass_send_jobs(user_settings, conn):
         return
 
     job_id = job['id']
-    print(f"-> [Worker] Iniciando job de envio em massa ID: {job_id} para usuário {user_id}.")
+    log_to_db('WORKER', f"Iniciando job de envio em massa ID: {job_id} para usuário {user_id}.")
     
     try:
-        conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = :now WHERE id = :job_id"), {'now': datetime.now(), 'job_id': job_id})
+        with conn.begin():
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = :now WHERE id = :job_id"), {'now': datetime.now(), 'job_id': job_id})
         
         recipients = json.loads(job['recipients_json'])
         sent, failed = send_emails_in_batches(recipients, job['subject'], job['body'], user_settings, user_id)
         
-        user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
-        plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
-        daily_limit = plan['daily_send_limit'] if plan else 25
-        if user['role'] == 'admin': daily_limit = -1
-        
-        if daily_limit != -1 and sent > 0:
-            sends_today = user['sends_today'] if user['last_send_date'] == datetime.now().date() else 0
-            conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': datetime.now().date(), 'uid': user_id})
+        with conn.begin():
+            user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+            plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
+            daily_limit = plan['daily_send_limit'] if plan else 25
+            if user['role'] == 'admin': daily_limit = -1
+            
+            if daily_limit != -1 and sent > 0:
+                sends_today = user['sends_today'] if user['last_send_date'] == datetime.now().date() else 0
+                conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': datetime.now().date(), 'uid': user_id})
 
-        conn.execute(text("UPDATE mass_send_jobs SET status = 'completed', sent_count = :sc, error_message = NULL WHERE id = :job_id"), {'sc': sent, 'job_id': job_id})
-        print(f"--> Job ID {job_id} concluído. {sent} enviados, {failed} falhas.")
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'completed', sent_count = :sc, error_message = NULL WHERE id = :job_id"), {'sc': sent, 'job_id': job_id})
+        log_to_db('WORKER', f"Job ID {job_id} concluído. {sent} enviados, {failed} falhas.")
 
     except Exception as e:
         error_msg = str(e)
-        print(f"--> ERRO CRÍTICO no Job ID {job_id}: {error_msg}")
-        conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
+        log_to_db('ERROR', f"ERRO CRÍTICO no Job ID {job_id}: {error_msg}")
+        with conn.begin():
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
 
 def worker_process_pending_schedules(user_settings, all_contacts_processed, conn):
     """Processa e-mails da fila de agendamento para um usuário específico."""
@@ -1093,54 +1116,55 @@ def worker_check_and_run_automations(user_settings, all_contacts_processed, conn
 
 def worker_main_loop():
     """Loop principal do worker, agora com todas as tarefas."""
-    print("--- Worker de Fundo Iniciado ---")
+    log_to_db('INFO', "--- Worker de Fundo Iniciado ---")
     self_url = os.environ.get('RENDER_EXTERNAL_URL')
     while True:
         gevent.sleep(300) # Aguarda 5 minutos
         conn = None
         try:
-            print(f"\n[{datetime.now()}] Worker: Iniciando ciclo...")
+            log_to_db('WORKER', "Iniciando ciclo de verificação...")
             if self_url:
                 try:
                     requests.get(self_url, timeout=10)
-                    print(f"-> Worker: Auto-ping para {self_url} bem-sucedido.")
                 except requests.RequestException as e:
-                    print(f"-> Worker: Falha no auto-ping: {e}")
+                    log_to_db('WARNING', f"Falha no auto-ping: {e}")
             
             conn = get_db_connection()
             active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
             
-            if not active_users: print("-> Worker: Nenhum usuário ativo encontrado.")
-            else: print(f"-> Worker: Encontrados {len(active_users)} usuários ativos para processar.")
+            if not active_users: 
+                log_to_db('WORKER', "Nenhum usuário ativo encontrado.")
+            else: 
+                log_to_db('WORKER', f"Encontrados {len(active_users)} usuários ativos para processar.")
             
             for user in active_users:
                 user_settings = dict(user)
-                print(f"--- Processando para: {user_settings['email']} ---")
+                log_to_db('WORKER', f"--- Processando para: {user_settings['email']} ---")
                 if user_settings['role'] != 'admin' and not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
-                    print("-> AVISO: Configurações do usuário incompletas. Pulando.")
+                    log_to_db('WARNING', f"Configurações do usuário {user_settings['email']} incompletas. Pulando.")
                     continue
                 try:
+                    # Usar uma nova transação para cada tipo de job do usuário
+                    with conn.begin():
+                        worker_process_mass_send_jobs(user_settings, conn)
                     with conn.begin():
                         all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-                        # CHAMA TODAS AS FUNÇÕES DO WORKER
-                        worker_process_mass_send_jobs(user_settings, conn)
                         worker_process_pending_schedules(user_settings, all_contacts, conn)
                         worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
-                    print(f"--> ERRO ao processar para o usuário {user_settings['email']}: {e}")
+                    log_to_db('ERROR', f"Erro ao processar para o usuário {user_settings['email']}: {e}")
 
-            print(f"[{datetime.now()}] Worker: Ciclo concluído.")
+            log_to_db('WORKER', "Ciclo do worker concluído.")
         except Exception as e:
-            print(f"ERRO CRÍTICO NO WORKER: {e}")
+            log_to_db('CRITICAL', f"ERRO CRÍTICO NO WORKER: {e}")
         finally:
             if conn and not conn.closed:
                 conn.close()
 
 def start_background_worker():
-    print("Iniciando o loop do worker em uma greenlet...")
-    worker_main_loop()
+    log_to_db('INFO', "Disparando greenlet para o background worker...")
+    gevent.spawn(worker_main_loop)
 
-print("Disparando greenlet para o background worker...")
-gevent.spawn(start_background_worker)
+start_background_worker()
 
-# O Gunicorn assume o controle a partir daqui. Não use app.run()
+# O Gunicorn assume o controle a partir daqui. Não use app.run().

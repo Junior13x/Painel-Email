@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Logs do Sistema{% endblock %}
+
+{% block head_scripts %}
+    <!-- Atualiza a página a cada 15 segundos para mostrar novos logs -->
+    <meta http-equiv="refresh" content="15">
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4 mb-5">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="h2">Logs do Sistema</h1>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
+    </div>
+    <p class="text-muted">Esta página é atualizada automaticamente a cada 15 segundos. Exibindo os últimos 200 registros.</p>
+
+    <div class="card shadow-sm">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-sm table-striped table-hover">
+                    <thead>
+                        <tr class="table-light">
+                            <th style="width: 20%;">Data/Hora (UTC)</th>
+                            <th style="width: 10%;">Nível</th>
+                            <th>Mensagem</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in logs %}
+                        <tr>
+                            <td><code>{{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp }}</code></td>
+                            <td>
+                                {% if log.level == 'CRITICAL' or log.level == 'ERROR' %}
+                                    <span class="badge bg-danger">{{ log.level }}</span>
+                                {% elif log.level == 'WARNING' %}
+                                    <span class="badge bg-warning text-dark">{{ log.level }}</span>
+                                {% elif log.level == 'SUCCESS' %}
+                                    <span class="badge bg-success">{{ log.level }}</span>
+                                {% else %}
+                                    <span class="badge bg-info text-dark">{{ log.level }}</span>
+                                {% endif %}
+                            </td>
+                            <td><pre class="mb-0" style="white-space: pre-wrap;">{{ log.message }}</pre></td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="3" class="text-center text-muted">Nenhum log encontrado.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
