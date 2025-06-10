@@ -52,7 +52,7 @@ def init_db_command():
         conn = get_db_connection()
         with conn.begin(): # Transações garantem que ou tudo funciona ou nada é salvo.
             print("Conectado ao banco de dados. Iniciando a criação das tabelas...")
-            conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates CASCADE;"))
+            conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates, mass_send_jobs CASCADE;"))
             print("Tabelas antigas removidas (se existiam).")
 
             # --- Criação de Todas as Tabelas ---
@@ -74,6 +74,19 @@ def init_db_command():
             conn.execute(text("CREATE TABLE envio_historico (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), recipient_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT, sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);"))
             conn.execute(text("CREATE TABLE scheduled_emails (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), schedule_type TEXT NOT NULL, status_target TEXT, manual_recipients TEXT, subject TEXT NOT NULL, body TEXT NOT NULL, send_at TIMESTAMP NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, is_sent BOOLEAN DEFAULT FALSE);"))
             conn.execute(text("CREATE TABLE email_templates (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), name TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(user_id, name));"))
+            # NOVA TABELA PARA ENVIOS EM MASSA
+            conn.execute(text("""
+                CREATE TABLE mass_send_jobs (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id),
+                    subject TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    recipients_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    processed_at TIMESTAMP WITH TIME ZONE
+                );
+            """))
             print("Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
@@ -82,7 +95,7 @@ def init_db_command():
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Automações Inteligentes', 'automations', 'Configura e-mails automáticos de boas-vindas e lembretes de expiração.');"))
             print("Features iniciais inseridas.")
 
-            conn.execute(text("INSERT INTO plans (name, price, validity_days, daily_send_limit, is_active) VALUES ('VIP', 99.99, 30, 500, TRUE);"))
+            conn.execute(text("INSERT INTO plans (name, price, validity_days, daily_send_limit, is_active) VALUES ('VIP', 99.99, 30, -1, TRUE);"))
             vip_plan_id = conn.execute(text("SELECT id FROM plans WHERE name = 'VIP';")).scalar()
             
             all_feature_ids = conn.execute(text("SELECT id FROM features;")).mappings().fetchall()
@@ -586,7 +599,6 @@ def mp_webhook():
 def mass_send_page():
     user_id = session['user_id']
     settings = load_user_settings(user_id)
-    sends_remaining = inject_user_info().get('sends_remaining', 0)
 
     if request.method == 'POST':
         if session.get('role') != 'admin' and not all(settings.get(k) for k in ['smtp_host', 'smtp_user', 'smtp_password']):
@@ -608,26 +620,29 @@ def mass_send_page():
                 flash("Nenhum destinatário selecionado.", "warning")
                 return redirect(url_for('mass_send_page'))
             
+            # Recalcula o limite de envios no momento da ação para garantir o valor mais atual
+            user_info = inject_user_info()
+            sends_remaining = user_info.get('sends_remaining', 0)
             if sends_remaining != -1 and len(recipients) > sends_remaining:
                 flash(f"Envio bloqueado. Você tentou enviar para {len(recipients)} contatos, mas só tem {sends_remaining} envios restantes hoje.", "danger")
                 return redirect(url_for('mass_send_page'))
 
             subject, body = request.form.get('subject'), request.form.get('body')
-            sent, failed = send_emails_in_batches(recipients, subject, body, settings, user_id)
             
-            if sends_remaining != -1 and sent > 0:
-                conn = get_db_connection()
-                with conn.begin():
-                    today_str = datetime.now().date()
-                    current_user = conn.execute(text("SELECT sends_today, last_send_date FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
-                    sends_today = current_user['sends_today'] if current_user['last_send_date'] == today_str else 0
-                    conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': today_str, 'uid': user_id})
-                conn.close()
-
-            flash(f"Envio concluído: {sent} e-mails com sucesso, {failed} falhas.", "info")
+            # CORREÇÃO: Agendar o envio em vez de executar na hora
+            conn = get_db_connection()
+            with conn.begin():
+                conn.execute(
+                    text("INSERT INTO mass_send_jobs (user_id, subject, body, recipients_json) VALUES (:uid, :sub, :body, :rec)"),
+                    {'uid': user_id, 'sub': subject, 'body': body, 'rec': json.dumps(recipients)}
+                )
+            conn.close()
+            
+            flash("Campanha de envio em massa agendada com sucesso! O processamento será feito em segundo plano.", "success")
             return redirect(url_for('history_page'))
+
         except Exception as e:
-            flash(f"Erro ao processar envio: {e}", "danger")
+            flash(f"Erro ao agendar envio: {e}", "danger")
 
     # GET
     contacts, error_message, templates = [], None, []
