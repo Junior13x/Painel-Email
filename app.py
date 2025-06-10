@@ -55,7 +55,7 @@ def log_to_db(level, message):
                 {'level': level, 'message': str(message)}
             )
     except (sqlalchemy_exc.ProgrammingError, sqlalchemy_exc.OperationalError) as e:
-        if "does not exist" in str(e):
+        if "does not exist" in str(e) or 'relation "app_logs" does not exist' in str(e):
             print(f"[LOG FALLBACK - TABELA 'app_logs' NÃO ENCONTRADA]: {level} - {message}")
         else:
             print(f"FALHA AO LOGAR PARA O BANCO DE DADOS (Erro de Programação/Operacional): {e}")
@@ -111,6 +111,7 @@ def init_db_logic():
             """))
             conn.execute(text("CREATE TABLE app_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, level TEXT, message TEXT);"))
             print("Tabelas criadas com sucesso.")
+            log_to_db('INFO', "Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Envio em Massa e por Status', 'mass-send', 'Permite o envio de e-mails em massa e por status de cliente.');"))
@@ -121,15 +122,15 @@ def init_db_logic():
             all_feature_ids = conn.execute(text("SELECT id FROM features;")).mappings().fetchall()
             for feature_id_row in all_feature_ids:
                 conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, :fid);"), {'pid': vip_plan_id, 'fid': feature_id_row['id']})
-            print("Features e Plano VIP iniciais inseridos.")
+            log_to_db('INFO', "Features e Plano VIP iniciais inseridos.")
 
             default_email = 'junior@admin.com'
             default_pass = '130896'
             password_hash = generate_password_hash(default_pass)
             conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"), {'email': default_email, 'password_hash': password_hash})
-            print(f"ADMIN PADRÃO CRIADO! E-mail: {default_email}")
+            log_to_db('INFO', f"ADMIN PADRÃO CRIADO! E-mail: {default_email}")
         
-        print("\nBanco de dados inicializado com sucesso!")
+        log_to_db('SUCCESS', "Banco de dados inicializado com sucesso!")
     except Exception as e:
         print(f"\nOcorreu um erro durante a inicialização do banco de dados: {e}")
         raise
