@@ -70,14 +70,13 @@ def log_to_db(level, message):
 
 def init_db_logic():
     """Lógica de inicialização que pode ser chamada de qualquer lugar."""
-    log_to_db('INFO', "==> [DB INIT] Iniciando lógica de inicialização...")
     conn = None
     try:
         conn = get_db_connection()
         with conn.begin(): 
-            log_to_db('INFO', "[DB INIT] Conectado ao banco. Apagando tabelas antigas...")
+            print("Conectado ao banco de dados. Iniciando a criação das tabelas...")
             conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates, mass_send_jobs, app_logs CASCADE;"))
-            log_to_db('INFO', "[DB INIT] Tabelas antigas removidas.")
+            print("Tabelas antigas removidas (se existiam).")
 
             # --- Criação de Todas as Tabelas ---
             conn.execute(text("CREATE TABLE features (id SERIAL PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, description TEXT);"))
@@ -114,7 +113,8 @@ def init_db_logic():
                 );
             """))
             conn.execute(text("CREATE TABLE app_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, level TEXT, message TEXT);"))
-            log_to_db('INFO', "[DB INIT] Tabelas criadas com sucesso.")
+            print("Tabelas criadas com sucesso.")
+            log_to_db('INFO', "Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Envio em Massa e por Status', 'mass-send', 'Permite o envio de e-mails em massa e por status de cliente.');"))
@@ -125,17 +125,17 @@ def init_db_logic():
             all_feature_ids = conn.execute(text("SELECT id FROM features;")).mappings().fetchall()
             for feature_id_row in all_feature_ids:
                 conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, :fid);"), {'pid': vip_plan_id, 'fid': feature_id_row['id']})
-            log_to_db('INFO', "[DB INIT] Features e Plano VIP iniciais inseridos.")
+            log_to_db('INFO', "Features e Plano VIP iniciais inseridos.")
 
             default_email = 'junior@admin.com'
             default_pass = '130896'
             password_hash = generate_password_hash(default_pass)
             conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"), {'email': default_email, 'password_hash': password_hash})
-            log_to_db('INFO', f"[DB INIT] ADMIN PADRÃO CRIADO! E-mail: {default_email}")
+            log_to_db('INFO', f"ADMIN PADRÃO CRIADO! E-mail: {default_email}")
         
-        log_to_db('SUCCESS', "==> [DB INIT] Banco de dados inicializado com sucesso!")
+        log_to_db('SUCCESS', "Banco de dados inicializado com sucesso!")
     except Exception as e:
-        log_to_db('CRITICAL', f"[DB INIT] Ocorreu um erro durante a inicialização do banco de dados: {e}")
+        print(f"\nOcorreu um erro durante a inicialização do banco de dados: {e}")
         raise
     finally:
         if conn and not conn.closed:
@@ -633,7 +633,6 @@ def create_payment():
         
         error_message_for_user = "Ocorreu um erro ao gerar a cobrança Pix."
         try:
-            # Tenta extrair a mensagem de erro específica da API do Mercado Pago
             sdk_error_body = json.loads(e.body)
             api_message = sdk_error_body.get("message", "Erro na API do MP.")
             causes = sdk_error_body.get("cause", [])
@@ -1025,6 +1024,7 @@ def automations_page():
     finally:
         if conn: conn.close()
 
+
 @app.route('/admin/logs')
 @login_required
 @admin_required
@@ -1039,7 +1039,7 @@ def view_logs():
         return render_template('logs.html', logs=[])
     finally:
         if conn: conn.close()
-
+        
 # ===============================================================
 # == LÓGICA DO WORKER (ROBÔ) INTEGRADO ==
 # ===============================================================
@@ -1168,10 +1168,11 @@ def worker_main_loop():
                     log_to_db('WARNING', f"Configurações do usuário {user_settings['email']} incompletas. Pulando.")
                     continue
                 try:
-                    worker_process_mass_send_jobs(user_settings, conn)
-                    all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-                    worker_process_pending_schedules(user_settings, all_contacts, conn)
-                    worker_check_and_run_automations(user_settings, all_contacts, conn)
+                    with conn.begin():
+                        worker_process_mass_send_jobs(user_settings, conn)
+                        all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                        worker_process_pending_schedules(user_settings, all_contacts, conn)
+                        worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
                     log_to_db('ERROR', f"Erro ao processar para o usuário {user_settings['email']}: {e}")
 
