@@ -110,7 +110,6 @@ def init_db_logic():
                 );
             """))
             conn.execute(text("CREATE TABLE app_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, level TEXT, message TEXT);"))
-            print("Tabelas criadas com sucesso.")
             log_to_db('INFO', "Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
@@ -334,8 +333,10 @@ def send_emails_in_batches(recipients, subject, body, settings, user_id):
     try:
         conn = get_db_connection()
         with conn.begin():
+            log_to_db('WORKER_SEND', f"Iniciando envio para {len(recipients)} destinatários.")
             for i in range(0, len(recipients), batch_size):
                 batch = recipients[i:i + batch_size]
+                log_to_db('WORKER_SEND', f"Processando lote {i//batch_size + 1} com {len(batch)} e-mails.")
                 for recipient in batch:
                     recipient_email = recipient.get("Email")
                     if not recipient_email: continue
@@ -343,15 +344,19 @@ def send_emails_in_batches(recipients, subject, body, settings, user_id):
                         msg = EmailMessage()
                         msg['Subject'], msg['From'], msg['To'] = subject, settings.get('smtp_user'), recipient_email
                         msg.add_alternative(body, subtype='html')
-                        with smtplib.SMTP(str(settings.get('smtp_host')), smtp_port) as server:
+                        with smtplib.SMTP(str(settings.get('smtp_host')), smtp_port, timeout=20) as server:
+                            log_to_db('WORKER_SMTP', f"Conectando ao SMTP: {settings.get('smtp_host')}:{smtp_port}")
                             server.starttls()
+                            log_to_db('WORKER_SMTP', "Conexão TLS estabelecida.")
                             server.login(settings.get('smtp_user'), settings.get('smtp_password'))
+                            log_to_db('WORKER_SMTP', f"Login com {settings.get('smtp_user')} bem-sucedido.")
                             server.send_message(msg)
+                            log_to_db('WORKER_SMTP', f"E-mail enviado para {recipient_email}.")
                         sent_count += 1
                         conn.execute(text("INSERT INTO envio_historico (user_id, recipient_email, subject, body) VALUES (:uid, :re, :s, :b)"), {'uid': user_id, 're': recipient_email, 's': subject, 'b': body})
                     except Exception as e:
                         fail_count += 1
-                        log_to_db('ERROR', f"FALHA ao enviar para {recipient_email}: {e}")
+                        log_to_db('ERROR', f"FALHA SMTP ao enviar para {recipient_email}: {e}")
                 if i + batch_size < len(recipients): gevent.sleep(delay_seconds)
     except Exception as e:
         log_to_db('ERROR', f"Erro crítico no envio em lote: {e}")
