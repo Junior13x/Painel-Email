@@ -1,6 +1,9 @@
 # ===============================================================
 # == IMPORTAÇÕES E CONFIGURAÇÕES INICIAIS ==
 # ===============================================================
+from gevent import monkey
+monkey.patch_all() # Deve ser a primeira linha executável para garantir que todas as bibliotecas sejam corrigidas
+
 import os
 import requests
 import re
@@ -686,30 +689,20 @@ def mass_send_page():
     settings = load_user_settings(user_id)
 
     if request.method == 'POST':
-        log_to_db('INFO', 'Rota /envio-em-massa acessada com método POST.')
-        
         if session.get('role') != 'admin' and not all(settings.get(k) for k in ['smtp_host', 'smtp_user', 'smtp_password']):
-            log_to_db('ERROR', f"Usuário {user_id} tentou enviar sem configurar SMTP.")
             flash("Configurações de SMTP incompletas.", "danger")
             return redirect(url_for('settings_page'))
         
         try:
-            log_to_db('DEBUG', 'Iniciando busca de contatos do Baserow.')
             all_contacts = process_contacts_status(get_all_contacts_from_baserow(settings))
-            log_to_db('DEBUG', f'Contatos do Baserow obtidos: {len(all_contacts)} contatos.')
-
             bulk_action = request.form.get('bulk_action')
-            log_to_db('DEBUG', f'Ação em massa selecionada: {bulk_action}')
             recipients = []
             if bulk_action and bulk_action != 'manual':
                 if bulk_action == 'all': recipients = all_contacts
                 else: recipients = [c for c in all_contacts if c.get('status_badge_class') == bulk_action]
             else:
                 selected_ids = request.form.getlist('selected_contacts')
-                log_to_db('DEBUG', f'IDs de contatos selecionados: {selected_ids}')
                 recipients = [c for c in all_contacts if str(c.get('id')) in selected_ids]
-
-            log_to_db('DEBUG', f'Total de destinatários determinados: {len(recipients)}')
 
             if not recipients:
                 flash("Nenhum destinatário selecionado.", "warning")
@@ -717,7 +710,6 @@ def mass_send_page():
             
             user_info = inject_user_info()
             sends_remaining = user_info.get('sends_remaining', 0)
-            log_to_db('DEBUG', f'Verificando limite de envios... Restantes: {sends_remaining}, Necessários: {len(recipients)}')
             if sends_remaining != -1 and len(recipients) > sends_remaining:
                 flash(f"Envio bloqueado. Você tentou enviar para {len(recipients)} contatos, mas só tem {sends_remaining} envios restantes hoje.", "danger")
                 return redirect(url_for('mass_send_page'))
@@ -726,19 +718,16 @@ def mass_send_page():
             
             conn = get_db_connection()
             with conn.begin():
-                log_to_db('INFO', 'Agendando job de envio em massa no banco de dados...')
                 conn.execute(
                     text("INSERT INTO mass_send_jobs (user_id, subject, body, recipients_json, recipients_count) VALUES (:uid, :sub, :body, :rec_json, :rec_count)"),
                     {'uid': user_id, 'sub': subject, 'body': body, 'rec_json': json.dumps(recipients), 'rec_count': len(recipients)}
                 )
             conn.close()
-            log_to_db('SUCCESS', f'Job agendado com sucesso para {len(recipients)} destinatários.')
             
             flash(f"Campanha para {len(recipients)} destinatários foi agendada! O envio será processado em segundo plano.", "success")
             return redirect(url_for('history_page'))
 
         except Exception as e:
-            log_to_db('ERROR', f"Erro ao agendar envio em massa: {e}")
             flash(f"Erro ao agendar envio: {e}", "danger")
 
     # GET
@@ -1036,7 +1025,6 @@ def automations_page():
     finally:
         if conn: conn.close()
 
-
 @app.route('/admin/logs')
 @login_required
 @admin_required
@@ -1051,7 +1039,7 @@ def view_logs():
         return render_template('logs.html', logs=[])
     finally:
         if conn: conn.close()
-        
+
 # ===============================================================
 # == LÓGICA DO WORKER (ROBÔ) INTEGRADO ==
 # ===============================================================
