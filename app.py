@@ -70,13 +70,14 @@ def log_to_db(level, message):
 
 def init_db_logic():
     """Lógica de inicialização que pode ser chamada de qualquer lugar."""
+    log_to_db('INFO', "==> [DB INIT] Iniciando lógica de inicialização...")
     conn = None
     try:
         conn = get_db_connection()
         with conn.begin(): 
-            print("Conectado ao banco de dados. Iniciando a criação das tabelas...")
+            log_to_db('INFO', "[DB INIT] Conectado ao banco. Apagando tabelas antigas...")
             conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates, mass_send_jobs, app_logs CASCADE;"))
-            print("Tabelas antigas removidas (se existiam).")
+            log_to_db('INFO', "[DB INIT] Tabelas antigas removidas.")
 
             # --- Criação de Todas as Tabelas ---
             conn.execute(text("CREATE TABLE features (id SERIAL PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, description TEXT);"))
@@ -113,8 +114,7 @@ def init_db_logic():
                 );
             """))
             conn.execute(text("CREATE TABLE app_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, level TEXT, message TEXT);"))
-            print("Tabelas criadas com sucesso.")
-            log_to_db('INFO', "Tabelas criadas com sucesso.")
+            log_to_db('INFO', "[DB INIT] Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Envio em Massa e por Status', 'mass-send', 'Permite o envio de e-mails em massa e por status de cliente.');"))
@@ -125,17 +125,17 @@ def init_db_logic():
             all_feature_ids = conn.execute(text("SELECT id FROM features;")).mappings().fetchall()
             for feature_id_row in all_feature_ids:
                 conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, :fid);"), {'pid': vip_plan_id, 'fid': feature_id_row['id']})
-            log_to_db('INFO', "Features e Plano VIP iniciais inseridos.")
+            log_to_db('INFO', "[DB INIT] Features e Plano VIP iniciais inseridos.")
 
             default_email = 'junior@admin.com'
             default_pass = '130896'
             password_hash = generate_password_hash(default_pass)
             conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"), {'email': default_email, 'password_hash': password_hash})
-            log_to_db('INFO', f"ADMIN PADRÃO CRIADO! E-mail: {default_email}")
+            log_to_db('INFO', f"[DB INIT] ADMIN PADRÃO CRIADO! E-mail: {default_email}")
         
-        log_to_db('SUCCESS', "Banco de dados inicializado com sucesso!")
+        log_to_db('SUCCESS', "==> [DB INIT] Banco de dados inicializado com sucesso!")
     except Exception as e:
-        print(f"\nOcorreu um erro durante a inicialização do banco de dados: {e}")
+        log_to_db('CRITICAL', f"[DB INIT] Ocorreu um erro durante a inicialização do banco de dados: {e}")
         raise
     finally:
         if conn and not conn.closed:
