@@ -81,7 +81,10 @@ def init_db_command():
                     subject TEXT NOT NULL,
                     body TEXT NOT NULL,
                     recipients_json TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending', -- pending, processing, completed, failed
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    error_message TEXT,
+                    sent_count INTEGER DEFAULT 0,
+                    recipients_count INTEGER DEFAULT 0,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     processed_at TIMESTAMP WITH TIME ZONE
                 );
@@ -642,7 +645,6 @@ def mass_send_page():
                 selected_ids = request.form.getlist('selected_contacts')
                 recipients = [c for c in all_contacts if str(c.get('id')) in selected_ids]
 
-            
             if not recipients:
                 flash("Nenhum destinatário selecionado.", "warning")
                 return redirect(url_for('mass_send_page'))
@@ -658,12 +660,12 @@ def mass_send_page():
             conn = get_db_connection()
             with conn.begin():
                 conn.execute(
-                    text("INSERT INTO mass_send_jobs (user_id, subject, recipients_json, recipients_count, body) VALUES (:uid, :sub, :rec_json, :rec_count, :body)"),
-                    {'uid': user_id, 'sub': subject, 'rec_json': json.dumps(recipients), 'rec_count': len(recipients), 'body': body}
+                    text("INSERT INTO mass_send_jobs (user_id, subject, body, recipients_json, recipients_count) VALUES (:uid, :sub, :body, :rec_json, :rec_count)"),
+                    {'uid': user_id, 'sub': subject, 'body': body, 'rec_json': json.dumps(recipients), 'rec_count': len(recipients)}
                 )
             conn.close()
             
-            flash(f"Campanha para {len(recipients)} destinatários foi agendada! O envio será processado em segundo plano.", "success")
+            flash("Campanha de envio em massa agendada com sucesso! O processamento será feito em segundo plano.", "success")
             return redirect(url_for('history_page'))
 
         except Exception as e:
@@ -754,10 +756,55 @@ def history_page():
     conn = None
     try:
         conn = get_db_connection()
-        history = conn.execute(text("SELECT * FROM envio_historico WHERE user_id = :uid ORDER BY sent_at DESC"), {'uid': session['user_id']}).mappings().fetchall()
-        return render_template('history.html', history=history)
+        jobs = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid ORDER BY created_at DESC LIMIT 50"), {'uid': session['user_id']}).mappings().fetchall()
+        history = conn.execute(text("SELECT * FROM envio_historico WHERE user_id = :uid ORDER BY sent_at DESC LIMIT 100"), {'uid': session['user_id']}).mappings().fetchall()
+        return render_template('history.html', jobs=jobs, history=history)
+    except Exception as e:
+        flash(f"Erro ao carregar histórico: {e}", "danger")
+        return render_template('history.html', jobs=[], history=[])
     finally:
         if conn: conn.close()
+        
+@app.route('/history/details/<int:history_id>')
+@login_required
+@feature_required('mass-send')
+def history_details(history_id):
+    conn = None
+    try:
+        conn = get_db_connection()
+        entry = conn.execute(
+            text("SELECT * FROM envio_historico WHERE id = :hid AND user_id = :uid"),
+            {'hid': history_id, 'uid': session['user_id']}
+        ).mappings().fetchone()
+        
+        if entry:
+            return jsonify(dict(entry))
+        else:
+            return jsonify({'error': 'Registro não encontrado ou sem permissão.'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn: conn.close()
+
+@app.route('/history/delete/<int:history_id>', methods=['POST'])
+@login_required
+@feature_required('mass-send')
+def delete_history_entry(history_id):
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.begin():
+            conn.execute(
+                text("DELETE FROM envio_historico WHERE id = :hid AND user_id = :uid"),
+                {'hid': history_id, 'uid': session['user_id']}
+            )
+        flash("Registro do histórico excluído com sucesso.", "info")
+    except Exception as e:
+        flash(f"Erro ao excluir registro: {e}", "danger")
+    finally:
+        if conn: conn.close()
+    return redirect(url_for('history_page'))
+
 
 @app.route('/history/resend', methods=['POST'])
 @login_required
@@ -930,31 +977,38 @@ def worker_process_mass_send_jobs(user_settings, conn):
     if not job:
         return
 
-    job_id = job['id']
-    print(f"-> [Worker] Iniciando job de envio em massa ID: {job_id} para usuário {user_id}.")
+    print(f"-> [Worker] Iniciando job de envio em massa ID: {job['id']} para usuário {user_id}.")
     
     try:
-        conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = :now WHERE id = :job_id"), {'now': datetime.now(), 'job_id': job_id})
+        conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = :now WHERE id = :job_id"), {'now': datetime.now(), 'job_id': job['id']})
         
         recipients = json.loads(job['recipients_json'])
-        sent, failed = send_emails_in_batches(recipients, job['subject'], job['body'], user_settings, user_id)
+        subject = job['subject']
+        body = job['body']
         
         user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
         plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
         daily_limit = plan['daily_send_limit'] if plan else 25
         if user['role'] == 'admin': daily_limit = -1
         
+        sends_today = user['sends_today'] if user['last_send_date'] == datetime.now().date() else 0
+        sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
+
+        if sends_remaining != -1 and len(recipients) > sends_remaining:
+            raise Exception(f"Limite de envios ({len(recipients)}) excede o restante ({sends_remaining}).")
+            
+        sent, failed = send_emails_in_batches(recipients, subject, body, user_settings, user_id)
+        
         if daily_limit != -1 and sent > 0:
-            sends_today = user['sends_today'] if user['last_send_date'] == datetime.now().date() else 0
             conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': datetime.now().date(), 'uid': user_id})
 
-        conn.execute(text("UPDATE mass_send_jobs SET status = 'completed', sent_count = :sc, error_message = NULL WHERE id = :job_id"), {'sc': sent, 'job_id': job_id})
-        print(f"--> Job ID {job_id} concluído. {sent} enviados, {failed} falhas.")
+        conn.execute(text("UPDATE mass_send_jobs SET status = 'completed', sent_count = :sc, error_message = NULL WHERE id = :job_id"), {'sc': sent, 'job_id': job['id']})
+        print(f"--> Job ID {job['id']} concluído. {sent} enviados, {failed} falhas.")
 
     except Exception as e:
         error_msg = str(e)
-        print(f"--> ERRO CRÍTICO no Job ID {job_id}: {error_msg}")
-        conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
+        print(f"--> ERRO CRÍTICO no Job ID {job['id']}: {error_msg}")
+        conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job['id']})
 
 def worker_process_pending_schedules(user_settings, all_contacts_processed, conn):
     """Processa e-mails da fila de agendamento para um usuário específico."""
@@ -968,7 +1022,7 @@ def worker_process_pending_schedules(user_settings, all_contacts_processed, conn
         if email_job['schedule_type'] == 'group':
             target = email_job['status_target']
             if target == 'all': recipients = all_contacts_processed
-            else: recipients = [c for c in all_contacts_processed if c['status_badge_class'] == target]
+            else: recipients = [c for c in all_contacts_processed if c.get('status_badge_class') == target]
         elif email_job['schedule_type'] == 'manual' and email_job['manual_recipients']:
             recipients = [{'Email': email.strip()} for email in email_job['manual_recipients'].split(',')]
         
@@ -1014,7 +1068,6 @@ def worker_check_and_run_automations(user_settings, all_contacts_processed, conn
 
 
 def worker_main_loop():
-    """Loop principal do worker, agora com todas as tarefas."""
     print("--- Worker de Fundo Iniciado ---")
     self_url = os.environ.get('RENDER_EXTERNAL_URL')
     while True:
@@ -1032,7 +1085,7 @@ def worker_main_loop():
             conn = get_db_connection()
             active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
             
-            if not active_users: print("-> Worker: Nenhum usuário ativo encontrado.")
+            if not active_users: print("-> Worker: Nenhum usuário ativo (com plano ou admin) encontrado.")
             else: print(f"-> Worker: Encontrados {len(active_users)} usuários ativos para processar.")
             
             for user in active_users:
@@ -1043,9 +1096,8 @@ def worker_main_loop():
                     continue
                 try:
                     with conn.begin():
-                        all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-                        # CHAMA TODAS AS FUNÇÕES DO WORKER
                         worker_process_mass_send_jobs(user_settings, conn)
+                        all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
                         worker_process_pending_schedules(user_settings, all_contacts, conn)
                         worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
