@@ -647,7 +647,6 @@ def mass_send_page():
                 flash("Nenhum destinatário selecionado.", "warning")
                 return redirect(url_for('mass_send_page'))
             
-            # Recalcula o limite de envios no momento da ação para garantir o valor mais atual
             user_info = inject_user_info()
             sends_remaining = user_info.get('sends_remaining', 0)
             if sends_remaining != -1 and len(recipients) > sends_remaining:
@@ -656,7 +655,6 @@ def mass_send_page():
 
             subject, body = request.form.get('subject'), request.form.get('body')
             
-            # CORREÇÃO: Agendar o envio em vez de executar na hora
             conn = get_db_connection()
             with conn.begin():
                 conn.execute(
@@ -924,6 +922,55 @@ def automations_page():
 # == LÓGICA DO WORKER (ROBÔ) INTEGRADO ==
 # ===============================================================
 
+def worker_process_mass_send_jobs(user_settings, conn):
+    """Processa envios em massa pendentes para um usuário."""
+    user_id = user_settings['id']
+    
+    # Busca um job pendente para este usuário
+    job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' LIMIT 1"), {'uid': user_id}).mappings().fetchone()
+    if not job:
+        return
+
+    print(f"-> [Usuário: {user_settings['email']}] Encontrado 1 job de envio em massa (ID: {job['id']}).")
+    
+    try:
+        # Marca o job como 'processing' para evitar que seja pego novamente
+        conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = :now WHERE id = :job_id"), {'now': datetime.now(), 'job_id': job['id']})
+        conn.commit()
+
+        recipients = json.loads(job['recipients_json'])
+        subject = job['subject']
+        body = job['body']
+        
+        # Recalcula o limite de envios no momento da ação
+        user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+        plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
+        daily_limit = plan['daily_send_limit'] if plan else 25
+        sends_today = user['sends_today'] if user['last_send_date'] == datetime.now().date() else 0
+        sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
+
+        if sends_remaining != -1 and len(recipients) > sends_remaining:
+            print(f"--> Job ID {job['id']} falhou: Limite de envios excedido.")
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'failed' WHERE id = :job_id"), {'job_id': job['id']})
+            conn.commit()
+            return
+            
+        sent, failed = send_emails_in_batches(recipients, subject, body, user_settings, user_id)
+        
+        # Atualiza o contador de envios
+        if daily_limit != -1 and sent > 0:
+            conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': datetime.now().date(), 'uid': user_id})
+
+        # Marca o job como 'completed'
+        conn.execute(text("UPDATE mass_send_jobs SET status = 'completed' WHERE id = :job_id"), {'job_id': job['id']})
+        conn.commit()
+        print(f"--> Job ID {job['id']} concluído. {sent} enviados, {failed} falhas.")
+
+    except Exception as e:
+        print(f"--> ERRO CRÍTICO ao processar job de envio em massa ID {job['id']}: {e}")
+        conn.execute(text("UPDATE mass_send_jobs SET status = 'failed' WHERE id = :job_id"), {'job_id': job['id']})
+        conn.commit()
+
 def worker_process_pending_schedules(user_settings, all_contacts_processed, conn):
     """Processa e-mails da fila de agendamento para um usuário específico."""
     user_id = user_settings['id']
@@ -997,7 +1044,6 @@ def worker_main_loop():
                     print(f"-> Worker: Falha no auto-ping: {e}")
             
             conn = get_db_connection()
-            # Correção: O worker deve processar usuários com plano ativo, mas também o admin
             active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
             
             if not active_users: print("-> Worker: Nenhum usuário ativo (com plano ou admin) encontrado.")
@@ -1012,6 +1058,8 @@ def worker_main_loop():
                 try:
                     with conn.begin():
                         all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                        # CHAMA AS FUNÇÕES DO WORKER
+                        worker_process_mass_send_jobs(user_settings, conn)
                         worker_process_pending_schedules(user_settings, all_contacts, conn)
                         worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
