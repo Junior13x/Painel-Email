@@ -185,6 +185,7 @@ def inject_user_info():
                 plan_status = {'plan_name': f"{plan_name} (Expirado)", 'badge_class': 'warning', 'days_left': days_left}
         
         sends_remaining = -1
+        daily_limit = -1
         if user['role'] != 'admin':
             plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
             daily_limit = plan['daily_send_limit'] if plan else 25
@@ -193,7 +194,7 @@ def inject_user_info():
                 sends_today = user['sends_today']
             sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
 
-        return dict(user_plan_status=plan_status, sends_remaining=sends_remaining, is_admin=(user['role'] == 'admin'), user_features=list(enabled_features))
+        return dict(user_plan_status=plan_status, sends_remaining=sends_remaining, daily_limit=daily_limit, is_admin=(user['role'] == 'admin'), user_features=list(enabled_features))
     except Exception as e:
         print(f"Erro ao injetar dados do plano: {e}")
         return {}
@@ -483,33 +484,6 @@ def plans_page():
     finally:
         if conn: conn.close()
 
-@app.route('/verificar-status-plano')
-@login_required
-def check_plan_status():
-    conn = None
-    try:
-        conn = get_db_connection()
-        user = conn.execute(text("SELECT plan_id, plan_expiration_date FROM users WHERE id = :uid"), {'uid': session['user_id']}).mappings().fetchone()
-        
-        if not user:
-            return jsonify({'status': 'erro', 'message': 'Usuário não encontrado'}), 404
-
-        is_approved = (
-            user['plan_id'] is not None and
-            user['plan_expiration_date'] is not None and
-            user['plan_expiration_date'] >= datetime.now().date()
-        )
-        
-        if is_approved:
-            return jsonify({'status': 'aprovado'})
-        else:
-            return jsonify({'status': 'pendente'})
-    except Exception as e:
-        print(f"Erro em check_plan_status: {e}")
-        return jsonify({'status': 'erro', 'message': str(e)}), 500
-    finally:
-        if conn: conn.close()
-        
 @app.route('/criar-pagamento', methods=['POST'])
 @login_required
 def create_payment():
