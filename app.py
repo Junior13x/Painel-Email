@@ -110,6 +110,7 @@ def init_db_logic():
                 );
             """))
             conn.execute(text("CREATE TABLE app_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, level TEXT, message TEXT);"))
+            print("Tabelas criadas com sucesso.")
             log_to_db('INFO', "Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
@@ -1036,7 +1037,7 @@ def view_logs():
         return render_template('logs.html', logs=[])
     finally:
         if conn: conn.close()
-
+        
 # ===============================================================
 # == LÓGICA DO WORKER (ROBÔ) INTEGRADO ==
 # ===============================================================
@@ -1090,7 +1091,7 @@ def worker_process_pending_schedules(user_settings, all_contacts_processed, conn
         if email_job['schedule_type'] == 'group':
             target = email_job['status_target']
             if target == 'all': recipients = all_contacts_processed
-            else: recipients = [c for c in all_contacts_processed if c['status_badge_class'] == target]
+            else: recipients = [c for c in all_contacts_processed if c.get('status_badge_class') == target]
         elif email_job['schedule_type'] == 'manual' and email_job['manual_recipients']:
             recipients = [{'Email': email.strip()} for email in email_job['manual_recipients'].split(',')]
         
@@ -1140,7 +1141,7 @@ def worker_main_loop():
     log_to_db('INFO', "--- Worker de Fundo Iniciado ---")
     self_url = os.environ.get('RENDER_EXTERNAL_URL')
     while True:
-        gevent.sleep(300) # Aguarda 5 minutos
+        gevent.sleep(300) 
         conn = None
         try:
             log_to_db('WORKER', "Iniciando ciclo de verificação...")
@@ -1165,11 +1166,10 @@ def worker_main_loop():
                     log_to_db('WARNING', f"Configurações do usuário {user_settings['email']} incompletas. Pulando.")
                     continue
                 try:
-                    with conn.begin():
-                        worker_process_mass_send_jobs(user_settings, conn)
-                        all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-                        worker_process_pending_schedules(user_settings, all_contacts, conn)
-                        worker_check_and_run_automations(user_settings, all_contacts, conn)
+                    worker_process_mass_send_jobs(user_settings, conn)
+                    all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                    worker_process_pending_schedules(user_settings, all_contacts, conn)
+                    worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
                     log_to_db('ERROR', f"Erro ao processar para o usuário {user_settings['email']}: {e}")
 
