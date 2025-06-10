@@ -1168,11 +1168,10 @@ def worker_main_loop():
                     log_to_db('WARNING', f"Configurações do usuário {user_settings['email']} incompletas. Pulando.")
                     continue
                 try:
-                    with conn.begin():
-                        worker_process_mass_send_jobs(user_settings, conn)
-                        all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-                        worker_process_pending_schedules(user_settings, all_contacts, conn)
-                        worker_check_and_run_automations(user_settings, all_contacts, conn)
+                    worker_process_mass_send_jobs(user_settings, conn)
+                    all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                    worker_process_pending_schedules(user_settings, all_contacts, conn)
+                    worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
                     log_to_db('ERROR', f"Erro ao processar para o usuário {user_settings['email']}: {e}")
 
@@ -1184,9 +1183,15 @@ def worker_main_loop():
                 conn.close()
 
 def start_background_worker():
-    log_to_db('INFO', "Disparando greenlet para o background worker...")
+    print("Disparando greenlet para o background worker...")
     gevent.spawn(worker_main_loop)
 
-start_background_worker()
+worker_started = False
+@app.before_request
+def start_worker_once():
+    global worker_started
+    if not worker_started:
+        start_background_worker()
+        worker_started = True
 
 # O Gunicorn assume o controle a partir daqui. Não use app.run().
