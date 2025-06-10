@@ -642,6 +642,7 @@ def mass_send_page():
                 selected_ids = request.form.getlist('selected_contacts')
                 recipients = [c for c in all_contacts if str(c.get('id')) in selected_ids]
 
+            
             if not recipients:
                 flash("Nenhum destinatário selecionado.", "warning")
                 return redirect(url_for('mass_send_page'))
@@ -657,12 +658,12 @@ def mass_send_page():
             conn = get_db_connection()
             with conn.begin():
                 conn.execute(
-                    text("INSERT INTO mass_send_jobs (user_id, subject, body, recipients_json) VALUES (:uid, :sub, :body, :rec)"),
-                    {'uid': user_id, 'sub': subject, 'body': body, 'rec': json.dumps(recipients)}
+                    text("INSERT INTO mass_send_jobs (user_id, subject, recipients_json, recipients_count, body) VALUES (:uid, :sub, :rec_json, :rec_count, :body)"),
+                    {'uid': user_id, 'sub': subject, 'rec_json': json.dumps(recipients), 'rec_count': len(recipients), 'body': body}
                 )
             conn.close()
             
-            flash("Campanha de envio em massa agendada com sucesso! O processamento será feito em segundo plano.", "success")
+            flash(f"Campanha para {len(recipients)} destinatários foi agendada! O envio será processado em segundo plano.", "success")
             return redirect(url_for('history_page'))
 
         except Exception as e:
@@ -924,51 +925,36 @@ def automations_page():
 def worker_process_mass_send_jobs(user_settings, conn):
     """Processa envios em massa pendentes para um usuário."""
     user_id = user_settings['id']
-    print(f"----> [JOB LOG] Verificando jobs de envio em massa para user_id {user_id}...")
     
     job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' LIMIT 1"), {'uid': user_id}).mappings().fetchone()
     if not job:
-        print(f"----> [JOB LOG] Nenhum job de envio em massa encontrado para user_id {user_id}.")
         return
 
-    print(f"----> [JOB LOG] Encontrado job de envio em massa ID: {job['id']} para usuário {user_id}.")
+    job_id = job['id']
+    print(f"-> [Worker] Iniciando job de envio em massa ID: {job_id} para usuário {user_id}.")
     
     try:
-        conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = :now WHERE id = :job_id"), {'now': datetime.now(), 'job_id': job['id']})
+        conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = :now WHERE id = :job_id"), {'now': datetime.now(), 'job_id': job_id})
         
         recipients = json.loads(job['recipients_json'])
-        subject = job['subject']
-        body = job['body']
-        print(f"-----> [JOB LOG] Job ID {job['id']}: Carregados {len(recipients)} destinatários.")
+        sent, failed = send_emails_in_batches(recipients, job['subject'], job['body'], user_settings, user_id)
         
         user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
         plan = conn.execute(text("SELECT daily_send_limit FROM plans WHERE id = :pid"), {'pid': user['plan_id']}).mappings().fetchone() if user['plan_id'] else None
         daily_limit = plan['daily_send_limit'] if plan else 25
         if user['role'] == 'admin': daily_limit = -1
         
-        sends_today = user['sends_today'] if user['last_send_date'] == datetime.now().date() else 0
-        sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
-        print(f"-----> [JOB LOG] Limites para user_id {user_id}: Restantes={sends_remaining}, Limite={daily_limit}")
-
-        if sends_remaining != -1 and len(recipients) > sends_remaining:
-            print(f"-----> [JOB LOG] Job ID {job['id']} falhou: Limite de envios ({len(recipients)}) excede o restante ({sends_remaining}).")
-            conn.execute(text("UPDATE mass_send_jobs SET status = 'failed' WHERE id = :job_id"), {'job_id': job['id']})
-            return
-            
-        print(f"-----> [JOB LOG] Job ID {job['id']}: Iniciando envio para {len(recipients)} destinatários.")
-        sent, failed = send_emails_in_batches(recipients, subject, body, user_settings, user_id)
-        print(f"-----> [JOB LOG] Resultado do envio em lote: {sent} enviados, {failed} falhas.")
-        
         if daily_limit != -1 and sent > 0:
+            sends_today = user['sends_today'] if user['last_send_date'] == datetime.now().date() else 0
             conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': datetime.now().date(), 'uid': user_id})
-            print(f"-----> [JOB LOG] Contador de envios do usuário {user_id} atualizado.")
 
-        conn.execute(text("UPDATE mass_send_jobs SET status = 'completed' WHERE id = :job_id"), {'job_id': job['id']})
-        print(f"-----> [JOB LOG] Job ID {job['id']} marcado como 'completed'.")
+        conn.execute(text("UPDATE mass_send_jobs SET status = 'completed', sent_count = :sc, error_message = NULL WHERE id = :job_id"), {'sc': sent, 'job_id': job_id})
+        print(f"--> Job ID {job_id} concluído. {sent} enviados, {failed} falhas.")
 
     except Exception as e:
-        print(f"-----> [JOB LOG] ERRO CRÍTICO ao processar job de envio em massa ID {job['id']}: {e}")
-        conn.execute(text("UPDATE mass_send_jobs SET status = 'failed' WHERE id = :job_id"), {'job_id': job['id']})
+        error_msg = str(e)
+        print(f"--> ERRO CRÍTICO no Job ID {job_id}: {error_msg}")
+        conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
 
 def worker_process_pending_schedules(user_settings, all_contacts_processed, conn):
     """Processa e-mails da fila de agendamento para um usuário específico."""
@@ -1028,6 +1014,7 @@ def worker_check_and_run_automations(user_settings, all_contacts_processed, conn
 
 
 def worker_main_loop():
+    """Loop principal do worker, agora com todas as tarefas."""
     print("--- Worker de Fundo Iniciado ---")
     self_url = os.environ.get('RENDER_EXTERNAL_URL')
     while True:
@@ -1045,7 +1032,7 @@ def worker_main_loop():
             conn = get_db_connection()
             active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
             
-            if not active_users: print("-> Worker: Nenhum usuário ativo (com plano ou admin) encontrado.")
+            if not active_users: print("-> Worker: Nenhum usuário ativo encontrado.")
             else: print(f"-> Worker: Encontrados {len(active_users)} usuários ativos para processar.")
             
             for user in active_users:
@@ -1056,8 +1043,9 @@ def worker_main_loop():
                     continue
                 try:
                     with conn.begin():
-                        worker_process_mass_send_jobs(user_settings, conn)
                         all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                        # CHAMA TODAS AS FUNÇÕES DO WORKER
+                        worker_process_mass_send_jobs(user_settings, conn)
                         worker_process_pending_schedules(user_settings, all_contacts, conn)
                         worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
