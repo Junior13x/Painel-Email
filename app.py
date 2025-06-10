@@ -931,7 +931,7 @@ def worker_process_mass_send_jobs(user_settings, conn):
     if not job:
         return
 
-    print(f"-> [Usuário: {user_settings['email']}] Encontrado 1 job de envio em massa (ID: {job['id']}).")
+    print(f"-> [Worker] Encontrado job de envio em massa ID: {job['id']} para usuário {user_id}.")
     
     try:
         # Marca o job como 'processing' para evitar que seja pego novamente
@@ -941,6 +941,7 @@ def worker_process_mass_send_jobs(user_settings, conn):
         recipients = json.loads(job['recipients_json'])
         subject = job['subject']
         body = job['body']
+        print(f"--> Job ID {job['id']}: Carregados {len(recipients)} destinatários.")
         
         # Recalcula o limite de envios no momento da ação
         user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
@@ -950,11 +951,12 @@ def worker_process_mass_send_jobs(user_settings, conn):
         sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
 
         if sends_remaining != -1 and len(recipients) > sends_remaining:
-            print(f"--> Job ID {job['id']} falhou: Limite de envios excedido.")
+            print(f"--> Job ID {job['id']} falhou: Limite de envios ({len(recipients)}) excede o restante ({sends_remaining}).")
             conn.execute(text("UPDATE mass_send_jobs SET status = 'failed' WHERE id = :job_id"), {'job_id': job['id']})
             conn.commit()
             return
             
+        print(f"--> Job ID {job['id']}: Iniciando envio para {len(recipients)} destinatários.")
         sent, failed = send_emails_in_batches(recipients, subject, body, user_settings, user_id)
         
         # Atualiza o contador de envios
