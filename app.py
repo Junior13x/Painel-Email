@@ -585,6 +585,7 @@ def mass_send_page():
 @login_required
 def settings_page():
     conn, user_id = g.db_conn, session['user_id']
+    is_admin = session.get('role') == 'admin'
     if request.method == 'POST':
         try:
             with conn.begin():
@@ -599,11 +600,17 @@ def settings_page():
             flash("Configurações salvas!", "success")
         except Exception as e: flash(f"Erro ao salvar configurações: {e}", "danger")
         return redirect(url_for('settings_page'))
+    
     user_settings_row = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()
     user_settings = dict(user_settings_row) if user_settings_row else {}
     if user_settings.get('automations_config'): user_settings['automations_config'] = json.loads(user_settings['automations_config'])
     else: user_settings['automations_config'] = {}
-    return render_template('settings.html', user_settings=user_settings)
+    
+    global_settings = {}
+    if is_admin:
+        global_settings['MERCADO_PAGO_ACCESS_TOKEN'] = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', '')
+        
+    return render_template('settings.html', user_settings=user_settings, global_settings=global_settings)
 
 @app.route('/history', methods=['GET'])
 @login_required
@@ -699,7 +706,7 @@ def schedule_page():
             flash("E-mail agendado com sucesso!", "success")
         return redirect(url_for('schedule_page'))
     pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE ORDER BY send_at ASC"), {'uid': user_id}).mappings().fetchall()
-    return render_template('agendamento.html', pending_emails=pending_emails)
+    return render_template('agendamento.html', pending_emails=pending_emails, schedule_data=None)
 
 @app.route('/agendamento/delete/<int:email_id>', methods=['POST'])
 @login_required
@@ -750,4 +757,4 @@ def view_logs():
     logs = g.db_conn.execute(text("SELECT * FROM app_logs ORDER BY timestamp DESC LIMIT 200")).mappings().fetchall()
     return render_template('logs.html', logs=logs)
 
-# O Gunicorn assume o controle a partir daqui.
+# O Gunicorn assume o controle a partir daqui
