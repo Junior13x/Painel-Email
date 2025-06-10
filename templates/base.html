@@ -52,6 +52,9 @@
                                 <ul class="dropdown-menu">
                                     <li><a class="dropdown-item" href="{{ url_for('users_page') }}">Gerenciar Usuários</a></li>
                                     <li><a class="dropdown-item" href="{{ url_for('manage_plans_page') }}">Gerenciar Planos</a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <!-- LINK ADICIONADO AQUI -->
+                                    <li><a class="dropdown-item" href="{{ url_for('view_logs') }}">Logs do Sistema</a></li>
                                 </ul>
                             </div>
                         {% endif %}

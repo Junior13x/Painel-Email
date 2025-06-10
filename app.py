@@ -31,7 +31,6 @@ app.secret_key = os.environ.get('SECRET_KEY', 'uma-chave-secreta-padrao-para-des
 # == BANCO DE DADOS E INICIALIZAÇÃO ==
 # ===============================================================
 
-    
 def get_db_connection():
     """Cria e retorna uma conexão com o banco de dados PostgreSQL."""
     db_url = os.environ.get('DATABASE_URL')
@@ -72,9 +71,9 @@ def init_db_logic():
     try:
         conn = get_db_connection()
         with conn.begin(): 
-            log_to_db('INFO', "Iniciando a criação das tabelas...")
+            print("Conectado ao banco de dados. Iniciando a criação das tabelas...")
             conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates, mass_send_jobs, app_logs CASCADE;"))
-            log_to_db('INFO', "Tabelas antigas removidas (se existiam).")
+            print("Tabelas antigas removidas (se existiam).")
 
             # --- Criação de Todas as Tabelas ---
             conn.execute(text("CREATE TABLE features (id SERIAL PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, description TEXT);"))
@@ -111,7 +110,7 @@ def init_db_logic():
                 );
             """))
             conn.execute(text("CREATE TABLE app_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, level TEXT, message TEXT);"))
-            log_to_db('INFO', "Tabelas criadas com sucesso.")
+            print("Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Envio em Massa e por Status', 'mass-send', 'Permite o envio de e-mails em massa e por status de cliente.');"))
@@ -122,17 +121,17 @@ def init_db_logic():
             all_feature_ids = conn.execute(text("SELECT id FROM features;")).mappings().fetchall()
             for feature_id_row in all_feature_ids:
                 conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, :fid);"), {'pid': vip_plan_id, 'fid': feature_id_row['id']})
-            log_to_db('INFO', "Features e Plano VIP iniciais inseridos.")
+            print("Features e Plano VIP iniciais inseridos.")
 
             default_email = 'junior@admin.com'
             default_pass = '130896'
             password_hash = generate_password_hash(default_pass)
             conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"), {'email': default_email, 'password_hash': password_hash})
-            log_to_db('INFO', f"ADMIN PADRÃO CRIADO! E-mail: {default_email}")
+            print(f"ADMIN PADRÃO CRIADO! E-mail: {default_email}")
         
-        log_to_db('SUCCESS', "Banco de dados inicializado com sucesso!")
+        print("\nBanco de dados inicializado com sucesso!")
     except Exception as e:
-        log_to_db('CRITICAL', f"Ocorreu um erro durante a inicialização do banco de dados: {e}")
+        print(f"\nOcorreu um erro durante a inicialização do banco de dados: {e}")
         raise
     finally:
         if conn and not conn.closed:
@@ -143,13 +142,13 @@ def init_db_command():
     init_db_logic()
 
 # ===============================================================
-# == ROTAS DE DEBBUGING E INICIALIZAÇÃO ==
+# == ROTAS DE DEBBUGING E INICIALIZAÇÃO (TEMPORÁRIAS) ==
 # ===============================================================
 @app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
 def secret_init_db():
     try:
         init_db_logic()
-        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA ESTA ROTA E A ROTA /debug-features DO SEU app.py AGORA POR MOTIVOS DE SEGURANÇA."
+        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA ESTA ROTA DO SEU app.py AGORA POR MOTIVOS DE SEGURANÇA."
         flash(message, "success")
         return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
     except Exception as e:
@@ -355,7 +354,7 @@ def send_emails_in_batches(recipients, subject, body, settings, user_id):
                 if i + batch_size < len(recipients): gevent.sleep(delay_seconds)
     except Exception as e:
         log_to_db('ERROR', f"Erro crítico no envio em lote: {e}")
-        raise e # Re-levanta a exceção para ser capturada pelo worker
+        raise e
     finally:
         if conn: conn.close()
     return sent_count, fail_count
@@ -624,6 +623,7 @@ def create_payment():
         
         error_message_for_user = "Ocorreu um erro ao gerar a cobrança Pix."
         try:
+            # Tenta extrair a mensagem de erro específica da API do Mercado Pago
             sdk_error_body = json.loads(e.body)
             api_message = sdk_error_body.get("message", "Erro na API do MP.")
             causes = sdk_error_body.get("cause", [])
@@ -1016,6 +1016,21 @@ def automations_page():
         if conn: conn.close()
 
 
+@app.route('/admin/logs')
+@login_required
+@admin_required
+def view_logs():
+    conn = None
+    try:
+        conn = get_db_connection()
+        logs = conn.execute(text("SELECT * FROM app_logs ORDER BY timestamp DESC LIMIT 200")).mappings().fetchall()
+        return render_template('logs.html', logs=logs)
+    except Exception as e:
+        flash(f"Erro ao carregar logs: {e}", "danger")
+        return render_template('logs.html', logs=[])
+    finally:
+        if conn: conn.close()
+
 # ===============================================================
 # == LÓGICA DO WORKER (ROBÔ) INTEGRADO ==
 # ===============================================================
@@ -1063,32 +1078,33 @@ def worker_process_pending_schedules(user_settings, all_contacts_processed, conn
     pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= :now"), {'uid': user_id, 'now': datetime.now()}).mappings().fetchall()
     if not pending_emails: return
 
-    print(f"-> [Usuário: {user_settings['email']}] Encontrados {len(pending_emails)} agendamento(s) para processar.")
+    log_to_db('WORKER', f"Usuário {user_id}: Encontrados {len(pending_emails)} agendamento(s) para processar.")
     for email_job in pending_emails:
         recipients = []
         if email_job['schedule_type'] == 'group':
             target = email_job['status_target']
             if target == 'all': recipients = all_contacts_processed
-            else: recipients = [c for c in all_contacts_processed if c.get('status_badge_class') == target]
+            else: recipients = [c for c in all_contacts_processed if c['status_badge_class'] == target]
         elif email_job['schedule_type'] == 'manual' and email_job['manual_recipients']:
             recipients = [{'Email': email.strip()} for email in email_job['manual_recipients'].split(',')]
         
         if recipients:
-            print(f"--> Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
+            log_to_db('WORKER', f"Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
             sent, failed = send_emails_in_batches(recipients, email_job['subject'], email_job['body'], user_settings, user_id)
             if failed == 0:
-                conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
-                print(f"--> Agendamento ID {email_job['id']} concluído e marcado como enviado.")
+                with conn.begin():
+                    conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
+                log_to_db('WORKER', f"Agendamento ID {email_job['id']} concluído e marcado como enviado.")
         else:
-            conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']}) # Marca como enviado mesmo sem destinatários para não rodar de novo
-            print(f"--> Agendamento ID {email_job['id']} não tinha destinatários e foi marcado como enviado.")
+            with conn.begin():
+                conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
+            log_to_db('WARNING', f"Agendamento ID {email_job['id']} não tinha destinatários e foi marcado como enviado.")
 
 def worker_check_and_run_automations(user_settings, all_contacts_processed, conn):
     """Verifica e executa as automações para um usuário específico."""
     user_id = user_settings['id']
     automations = json.loads(user_settings.get('automations_config') or '{}')
     
-    # Automação de Boas-vindas
     welcome_config = automations.get('welcome', {})
     if welcome_config.get('enabled'):
         subject, body = welcome_config.get('subject'), welcome_config.get('body')
@@ -1097,10 +1113,9 @@ def worker_check_and_run_automations(user_settings, all_contacts_processed, conn
             for contact in new_contacts:
                 already_sent = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
                 if not already_sent:
-                    print(f"--> Enviando boas-vindas para {contact.get('Email')}")
+                    log_to_db('WORKER', f"Enviando boas-vindas para {contact.get('Email')}")
                     send_emails_in_batches([contact], subject, body, user_settings, user_id)
 
-    # Automação de Expiração
     expiry_config = automations.get('expiry', {})
     if expiry_config.get('enabled'):
         for days_left in [7, 3, 1]:
@@ -1110,7 +1125,7 @@ def worker_check_and_run_automations(user_settings, all_contacts_processed, conn
                 for contact in expiring_contacts:
                     already_sent_today = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub AND DATE(sent_at) = CURRENT_DATE"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
                     if not already_sent_today:
-                        print(f"--> Enviando aviso de {days_left} dias para {contact.get('Email')}")
+                        log_to_db('WORKER', f"Enviando aviso de {days_left} dias para {contact.get('Email')}")
                         send_emails_in_batches([contact], subject, body, user_settings, user_id)
 
 
@@ -1144,10 +1159,11 @@ def worker_main_loop():
                     log_to_db('WARNING', f"Configurações do usuário {user_settings['email']} incompletas. Pulando.")
                     continue
                 try:
-                    worker_process_mass_send_jobs(user_settings, conn)
-                    all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-                    worker_process_pending_schedules(user_settings, all_contacts, conn)
-                    worker_check_and_run_automations(user_settings, all_contacts, conn)
+                    with conn.begin():
+                        worker_process_mass_send_jobs(user_settings, conn)
+                        all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                        worker_process_pending_schedules(user_settings, all_contacts, conn)
+                        worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
                     log_to_db('ERROR', f"Erro ao processar para o usuário {user_settings['email']}: {e}")
 
