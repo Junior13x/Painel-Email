@@ -31,6 +31,18 @@ app.secret_key = os.environ.get('SECRET_KEY', 'uma-chave-secreta-padrao-para-des
 # == BANCO DE DADOS E INICIALIZAÇÃO ==
 # ===============================================================
 
+@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
+def secret_init_db():
+    try:
+        init_db_logic()
+        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA ESTA ROTA E A ROTA /debug-features DO SEU app.py AGORA POR MOTIVOS DE SEGURANÇA."
+        flash(message, "success")
+        return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
+    except Exception as e:
+        message = f"Erro ao reinicializar o banco de dados: {e}"
+        flash(message, "danger")
+        return f"<h1>Erro</h1><p>{message}</p>", 500
+        
 def get_db_connection():
     """Cria e retorna uma conexão com o banco de dados PostgreSQL."""
     db_url = os.environ.get('DATABASE_URL')
