@@ -1168,10 +1168,11 @@ def worker_main_loop():
                     log_to_db('WARNING', f"Configurações do usuário {user_settings['email']} incompletas. Pulando.")
                     continue
                 try:
-                    worker_process_mass_send_jobs(user_settings, conn)
-                    all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-                    worker_process_pending_schedules(user_settings, all_contacts, conn)
-                    worker_check_and_run_automations(user_settings, all_contacts, conn)
+                    with conn.begin():
+                        worker_process_mass_send_jobs(user_settings, conn)
+                        all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                        worker_process_pending_schedules(user_settings, all_contacts, conn)
+                        worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
                     log_to_db('ERROR', f"Erro ao processar para o usuário {user_settings['email']}: {e}")
 
