@@ -45,7 +45,7 @@ def get_db_connection():
     return conn
 
 def log_to_db(level, message):
-    """Salva uma mensagem de log no banco de dados."""
+    """Salva uma mensagem de log no banco de dados, com fallback para print()."""
     conn = None
     try:
         conn = get_db_connection()
@@ -54,17 +54,23 @@ def log_to_db(level, message):
                 text("INSERT INTO app_logs (level, message) VALUES (:level, :message)"),
                 {'level': level, 'message': str(message)}
             )
+    except (sqlalchemy_exc.ProgrammingError, sqlalchemy_exc.OperationalError) as e:
+        if "does not exist" in str(e):
+            print(f"[LOG FALLBACK - TABELA 'app_logs' NÃO ENCONTRADA]: {level} - {message}")
+        else:
+            print(f"FALHA AO LOGAR PARA O BANCO DE DADOS (Erro de Programação/Operacional): {e}")
     except Exception as e:
-        print(f"FALHA AO LOGAR PARA O BANCO DE DADOS: {e}")
+        print(f"FALHA GERAL AO LOGAR PARA O BANCO DE DADOS: {e}")
     finally:
-        if conn: conn.close()
+        if conn and not conn.closed:
+            conn.close()
 
 def init_db_logic():
     """Lógica de inicialização que pode ser chamada de qualquer lugar."""
     conn = None
     try:
         conn = get_db_connection()
-        with conn.begin(): # Transações garantem que ou tudo funciona ou nada é salvo.
+        with conn.begin():
             print("Conectado ao banco de dados. Iniciando a criação das tabelas...")
             conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates, mass_send_jobs, app_logs CASCADE;"))
             print("Tabelas antigas removidas (se existiam).")
@@ -104,36 +110,32 @@ def init_db_logic():
                 );
             """))
             conn.execute(text("CREATE TABLE app_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, level TEXT, message TEXT);"))
-            print("Tabelas criadas com sucesso.")
+            log_to_db('INFO', "Tabelas criadas com sucesso.")
 
             # --- Dados Iniciais ---
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Envio em Massa e por Status', 'mass-send', 'Permite o envio de e-mails em massa e por status de cliente.');"))
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Agendamentos de Campanhas', 'schedules', 'Permite agendar envios de e-mail para o futuro.');"))
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Automações Inteligentes', 'automations', 'Configura e-mails automáticos de boas-vindas e lembretes de expiração.');"))
-            print("Features iniciais inseridas.")
-
             conn.execute(text("INSERT INTO plans (name, price, validity_days, daily_send_limit, is_active) VALUES ('VIP', 99.99, 30, -1, TRUE);"))
             vip_plan_id = conn.execute(text("SELECT id FROM plans WHERE name = 'VIP';")).scalar()
-            
             all_feature_ids = conn.execute(text("SELECT id FROM features;")).mappings().fetchall()
             for feature_id_row in all_feature_ids:
                 conn.execute(text("INSERT INTO plan_features (plan_id, feature_id) VALUES (:pid, :fid);"), {'pid': vip_plan_id, 'fid': feature_id_row['id']})
-            print("Plano VIP inicial criado e associado a todas as features.")
+            log_to_db('INFO', "Features e Plano VIP iniciais inseridos.")
 
             default_email = 'junior@admin.com'
             default_pass = '130896'
             password_hash = generate_password_hash(default_pass)
             conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"), {'email': default_email, 'password_hash': password_hash})
-            print(f"ADMIN PADRÃO CRIADO! E-mail: {default_email} | Senha: {default_pass}")
+            log_to_db('INFO', f"ADMIN PADRÃO CRIADO! E-mail: {default_email}")
         
-        print("\nBanco de dados inicializado com sucesso!")
+        log_to_db('SUCCESS', "Banco de dados inicializado com sucesso!")
     except Exception as e:
-        print(f"\nOcorreu um erro durante a inicialização do banco de dados: {e}")
+        log_to_db('CRITICAL', f"Ocorreu um erro durante a inicialização do banco de dados: {e}")
         raise
     finally:
         if conn and not conn.closed:
             conn.close()
-            print("Conexão com o banco de dados fechada.")
 
 @app.cli.command('init-db')
 def init_db_command():
@@ -142,7 +144,7 @@ def init_db_command():
 # ===============================================================
 # == ROTAS DE DEBBUGING E INICIALIZAÇÃO ==
 # ===============================================================
-@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
+@app.route('/run-db-initialization-once/mudar-para-algo-muito-dificil')
 def secret_init_db():
     try:
         init_db_logic()
@@ -348,10 +350,10 @@ def send_emails_in_batches(recipients, subject, body, settings, user_id):
                         conn.execute(text("INSERT INTO envio_historico (user_id, recipient_email, subject, body) VALUES (:uid, :re, :s, :b)"), {'uid': user_id, 're': recipient_email, 's': subject, 'b': body})
                     except Exception as e:
                         fail_count += 1
-                        print(f"FALHA ao enviar para {recipient_email}: {e}")
+                        log_to_db('ERROR', f"FALHA ao enviar para {recipient_email}: {e}")
                 if i + batch_size < len(recipients): gevent.sleep(delay_seconds)
     except Exception as e:
-        print(f"Erro crítico no envio em lote: {e}")
+        log_to_db('ERROR', f"Erro crítico no envio em lote: {e}")
         raise e # Re-levanta a exceção para ser capturada pelo worker
     finally:
         if conn: conn.close()
@@ -621,7 +623,6 @@ def create_payment():
         
         error_message_for_user = "Ocorreu um erro ao gerar a cobrança Pix."
         try:
-            # Tenta extrair a mensagem de erro específica da API do Mercado Pago
             sdk_error_body = json.loads(e.body)
             api_message = sdk_error_body.get("message", "Erro na API do MP.")
             causes = sdk_error_body.get("cause", [])
@@ -825,9 +826,7 @@ def history_details(history_id):
         ).mappings().fetchone()
         
         if entry:
-            # Convertendo o objeto Row para um dicionário padrão antes de jsonify
             entry_dict = dict(entry)
-            # Converte datetime para string ISO para ser serializável em JSON
             if 'sent_at' in entry_dict and isinstance(entry_dict['sent_at'], datetime):
                 entry_dict['sent_at'] = entry_dict['sent_at'].isoformat()
             return jsonify(entry_dict)
@@ -1069,7 +1068,7 @@ def worker_process_pending_schedules(user_settings, all_contacts_processed, conn
         if email_job['schedule_type'] == 'group':
             target = email_job['status_target']
             if target == 'all': recipients = all_contacts_processed
-            else: recipients = [c for c in all_contacts_processed if c['status_badge_class'] == target]
+            else: recipients = [c for c in all_contacts_processed if c.get('status_badge_class') == target]
         elif email_job['schedule_type'] == 'manual' and email_job['manual_recipients']:
             recipients = [{'Email': email.strip()} for email in email_job['manual_recipients'].split(',')]
         
@@ -1144,13 +1143,10 @@ def worker_main_loop():
                     log_to_db('WARNING', f"Configurações do usuário {user_settings['email']} incompletas. Pulando.")
                     continue
                 try:
-                    # Usar uma nova transação para cada tipo de job do usuário
-                    with conn.begin():
-                        worker_process_mass_send_jobs(user_settings, conn)
-                    with conn.begin():
-                        all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-                        worker_process_pending_schedules(user_settings, all_contacts, conn)
-                        worker_check_and_run_automations(user_settings, all_contacts, conn)
+                    worker_process_mass_send_jobs(user_settings, conn)
+                    all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                    worker_process_pending_schedules(user_settings, all_contacts, conn)
+                    worker_check_and_run_automations(user_settings, all_contacts, conn)
                 except Exception as e:
                     log_to_db('ERROR', f"Erro ao processar para o usuário {user_settings['email']}: {e}")
 
