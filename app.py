@@ -31,18 +31,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'uma-chave-secreta-padrao-para-des
 # == BANCO DE DADOS E INICIALIZAÇÃO ==
 # ===============================================================
 
-@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
-def secret_init_db():
-    try:
-        init_db_logic()
-        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA ESTA ROTA E A ROTA /debug-features DO SEU app.py AGORA POR MOTIVOS DE SEGURANÇA."
-        flash(message, "success")
-        return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
-    except Exception as e:
-        message = f"Erro ao reinicializar o banco de dados: {e}"
-        flash(message, "danger")
-        return f"<h1>Erro</h1><p>{message}</p>", 500
-        
+    
 def get_db_connection():
     """Cria e retorna uma conexão com o banco de dados PostgreSQL."""
     db_url = os.environ.get('DATABASE_URL')
@@ -82,10 +71,10 @@ def init_db_logic():
     conn = None
     try:
         conn = get_db_connection()
-        with conn.begin():
-            print("Conectado ao banco de dados. Iniciando a criação das tabelas...")
+        with conn.begin(): 
+            log_to_db('INFO', "Iniciando a criação das tabelas...")
             conn.execute(text("DROP TABLE IF EXISTS users, features, plans, plan_features, envio_historico, scheduled_emails, email_templates, mass_send_jobs, app_logs CASCADE;"))
-            print("Tabelas antigas removidas (se existiam).")
+            log_to_db('INFO', "Tabelas antigas removidas (se existiam).")
 
             # --- Criação de Todas as Tabelas ---
             conn.execute(text("CREATE TABLE features (id SERIAL PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, description TEXT);"))
@@ -156,11 +145,11 @@ def init_db_command():
 # ===============================================================
 # == ROTAS DE DEBBUGING E INICIALIZAÇÃO ==
 # ===============================================================
-@app.route('/run-db-initialization-once/mudar-para-algo-muito-dificil')
+@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
 def secret_init_db():
     try:
         init_db_logic()
-        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA ESTA ROTA DO SEU app.py AGORA POR MOTIVOS DE SEGURANÇA."
+        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA ESTA ROTA E A ROTA /debug-features DO SEU app.py AGORA POR MOTIVOS DE SEGURANÇA."
         flash(message, "success")
         return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
     except Exception as e:
