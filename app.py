@@ -306,11 +306,7 @@ def init_db_logic():
                     batch_size INTEGER, delay_seconds INTEGER, automations_config TEXT,
                     sends_today INTEGER DEFAULT 0, last_send_date DATE,
                     is_verified BOOLEAN DEFAULT FALSE,
-                    verification_code TEXT,
-                    verification_smtp_host TEXT,
-                    verification_smtp_port INTEGER,
-                    verification_smtp_user TEXT,
-                    verification_smtp_password TEXT
+                    verification_code TEXT
                 );"""))
             conn.execute(text("CREATE TABLE plan_features (plan_id INTEGER REFERENCES plans(id) ON DELETE CASCADE, feature_id INTEGER REFERENCES features(id) ON DELETE CASCADE, PRIMARY KEY (plan_id, feature_id));"))
             conn.execute(text("CREATE TABLE envio_historico (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), recipient_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT, sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);"))
@@ -372,14 +368,14 @@ def feature_required(feature_slug):
     return decorator
 
 def send_verification_email(recipient_email, code):
-    """Envia o e-mail de verificação usando as credenciais de verificação do sistema."""
+    """Envia o e-mail de verificação usando as credenciais SMTP do admin."""
     conn = None
     try:
         conn = db_engine.connect()
-        verification_settings = conn.execute(text("SELECT verification_smtp_host, verification_smtp_port, verification_smtp_user, verification_smtp_password FROM users WHERE role = 'admin' LIMIT 1")).mappings().fetchone()
+        admin_settings = conn.execute(text("SELECT smtp_host, smtp_port, smtp_user, smtp_password FROM users WHERE role = 'admin' LIMIT 1")).mappings().fetchone()
         
-        if not verification_settings or not all(verification_settings.values()):
-            log_to_db_worker('CRITICAL', "Credenciais SMTP de Verificação não configuradas pelo admin. Não é possível enviar e-mail.")
+        if not admin_settings or not all(admin_settings.values()):
+            log_to_db_worker('CRITICAL', "Credenciais SMTP do admin não configuradas. Não é possível enviar e-mail de verificação.")
             return False
 
         subject = f"Seu código de verificação é: {code}"
@@ -392,13 +388,13 @@ def send_verification_email(recipient_email, code):
         
         msg = EmailMessage()
         msg['Subject'] = subject
-        msg['From'] = verification_settings['verification_smtp_user']
+        msg['From'] = admin_settings['smtp_user']
         msg['To'] = recipient_email
         msg.add_alternative(body, subtype='html')
 
-        with smtplib.SMTP(str(verification_settings['verification_smtp_host']), int(verification_settings['verification_smtp_port']), timeout=20) as server:
+        with smtplib.SMTP(str(admin_settings['smtp_host']), int(admin_settings['smtp_port']), timeout=20) as server:
             server.starttls()
-            server.login(verification_settings['verification_smtp_user'], verification_settings['verification_smtp_password'])
+            server.login(admin_settings['smtp_user'], admin_settings['smtp_password'])
             server.send_message(msg)
         
         log_to_db_worker('INFO', f"E-mail de verificação enviado com sucesso para {recipient_email}.")
@@ -817,38 +813,21 @@ def mass_send_page():
 def settings_page():
     conn, user_id = g.db_conn, session['user_id']
     is_admin = session.get('role') == 'admin'
-    
     if request.method == 'POST':
         try:
             with conn.begin():
-                # Campos para todos os utilizadores
                 automations = {'welcome': {'enabled': 'welcome_enabled' in request.form, 'subject': request.form.get('welcome_subject'), 'body': request.form.get('welcome_body')}, 'expiry': {'enabled': 'expiry_enabled' in request.form, 'subject_7_days': request.form.get('expiry_7_days_subject'), 'body_7_days': request.form.get('expiry_7_days_body'), 'subject_3_days': request.form.get('expiry_3_days_subject'), 'body_3_days': request.form.get('expiry_3_days_body'), 'subject_1_day': request.form.get('expiry_1_day_subject'), 'body_1_day': request.form.get('expiry_1_day_body')}}
                 update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user']}
                 update_fields.update({'smtp_port': int(request.form.get('smtp_port') or 587), 'batch_size': int(request.form.get('batch_size') or 15), 'delay_seconds': int(request.form.get('delay_seconds') or 60), 'automations_config': json.dumps(automations)})
                 
-                # Campos apenas para o admin
-                if is_admin:
-                    update_fields.update({
-                        'verification_smtp_host': request.form.get('verification_smtp_host'),
-                        'verification_smtp_port': int(request.form.get('verification_smtp_port') or 587),
-                        'verification_smtp_user': request.form.get('verification_smtp_user')
-                    })
-                    if request.form.get('verification_smtp_password'):
-                        update_fields['verification_smtp_password'] = request.form.get('verification_smtp_password')
-
-                set_clauses = [f"{key} = :{key}" for key in update_fields if key != 'verification_smtp_password' and key != 'smtp_password']
-                if 'verification_smtp_password' in update_fields:
-                     set_clauses.append("verification_smtp_password = :verification_smtp_password")
-                
+                set_clauses = [f"{key} = :{key}" for key in update_fields]
                 if request.form.get('smtp_password'):
                     set_clauses.append("smtp_password = :smtp_password")
                     update_fields['smtp_password'] = request.form.get('smtp_password')
                 
                 conn.execute(text(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = :user_id"), {**update_fields, 'user_id': user_id})
-
             flash("Configurações salvas!", "success")
-        except Exception as e: 
-            flash(f"Erro ao salvar configurações: {e}", "danger")
+        except Exception as e: flash(f"Erro ao salvar configurações: {e}", "danger")
         return redirect(url_for('settings_page'))
     
     user_settings_row = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()

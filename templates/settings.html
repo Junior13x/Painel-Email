@@ -7,38 +7,6 @@
     <h1 class="mb-4">Configurações</h1>
 
     <form method="POST">
-        <!-- SEÇÃO APENAS PARA ADMIN -->
-        {% if is_admin %}
-        <div class="card mb-4 border-danger">
-            <div class="card-header bg-danger-subtle text-danger-emphasis">
-                <i class="bi bi-shield-lock-fill"></i>
-                Configurações de Administrador
-            </div>
-            <div class="card-body">
-                <h5 class="card-title">SMTP para E-mails de Verificação</h5>
-                <p class="card-text">Estas credenciais serão usadas para enviar códigos de verificação para novos utilizadores. Devem ser de um e-mail de sistema (ex: nao-responda@seudominio.com).</p>
-                <div class="row">
-                    <div class="col-md-6 mb-3">
-                        <label for="verification_smtp_host" class="form-label">Host SMTP de Verificação</label>
-                        <input type="text" class="form-control" id="verification_smtp_host" name="verification_smtp_host" value="{{ user_settings.verification_smtp_host or '' }}">
-                    </div>
-                    <div class="col-md-2 mb-3">
-                        <label for="verification_smtp_port" class="form-label">Porta</label>
-                        <input type="number" class="form-control" id="verification_smtp_port" name="verification_smtp_port" value="{{ user_settings.verification_smtp_port or '587' }}">
-                    </div>
-                    <div class="col-md-4 mb-3">
-                        <label for="verification_smtp_user" class="form-label">Utilizador SMTP de Verificação</label>
-                        <input type="email" class="form-control" id="verification_smtp_user" name="verification_smtp_user" value="{{ user_settings.verification_smtp_user or '' }}">
-                    </div>
-                </div>
-                <div class="mb-3">
-                    <label for="verification_smtp_password" class="form-label">Senha SMTP de Verificação</label>
-                    <input type="password" class="form-control" id="verification_smtp_password" name="verification_smtp_password" placeholder="Deixe em branco para não alterar">
-                </div>
-            </div>
-        </div>
-        {% endif %}
-        
         <!-- CONFIGURAÇÕES DE CAMPANHAS PESSOAIS -->
         <div class="card mb-4">
             <div class="card-header">
@@ -47,7 +15,7 @@
             </div>
             <div class="card-body">
                 <h5 class="card-title">Suas Credenciais SMTP</h5>
-                 <p class="card-text">Estas são as suas credenciais pessoais para o envio de campanhas (em massa, agendamentos, etc.).</p>
+                 <p class="card-text">Estas são as suas credenciais pessoais para o envio de campanhas (em massa, agendamentos, etc.). Para o registo de novos utilizadores, serão usadas as credenciais do **utilizador admin**.</p>
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <label for="smtp_host" class="form-label">Seu Host SMTP</label>
