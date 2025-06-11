@@ -43,12 +43,17 @@ def format_datetime_br(value, format='%d/%m/%Y %H:%M:%S'):
     """Filtro para formatar datas no fuso horário de Brasília."""
     if value is None:
         return ""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value # Retorna a string original se não for um formato de data válido
+            
     if value.tzinfo is None:
         value = pytz.utc.localize(value)
     
     local_time = value.astimezone(BR_TZ)
     return local_time.strftime(format)
-
 
 # ===============================================================
 # == 1. GESTÃO CENTRALIZADA DO BANCO DE DADOS ==
@@ -202,6 +207,7 @@ def process_user_tasks(conn, user):
         subject, body = welcome_config.get('subject'), welcome_config.get('body')
         if subject and body:
             log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Iniciando verificação de contactos para boas-vindas. Total: {len(all_contacts)}.")
+            new_contacts = []
             now = datetime.now(BR_TZ)
             for contact in all_contacts:
                 contact_email = contact.get('Email', 'sem-email')
@@ -219,12 +225,34 @@ def process_user_tasks(conn, user):
                 log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Verificando {contact_email}. Data: {parsed_date.strftime('%Y-%m-%d')}. Dias de diferença: {days_diff}.")
 
                 if days_diff < 1:
-                    pass
-
+                    new_contacts.append(contact)
+            
+            if new_contacts:
+                log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(new_contacts)} novos contactos para boas-vindas.")
+                for contact in new_contacts:
+                    already_sent = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
+                    if not already_sent:
+                        log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando e-mail de boas-vindas para {contact.get('Email')}.")
+                        send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
+                    else:
+                        log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: E-mail de boas-vindas já enviado para {contact.get('Email')}. Pulando.")
+    
     # Automação de Expiração
     expiry_config = automations.get('expiry', {})
     if expiry_config.get('enabled'):
-        pass
+        log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de expiração.")
+        for days_left in [7, 3, 1]:
+            subject, body = expiry_config.get(f'subject_{days_left}_days'), expiry_config.get(f'body_{days_left}_days')
+            if subject and body:
+                expiring_contacts = [c for c in all_contacts if c.get('remaining_days_int') == days_left]
+                if expiring_contacts: log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(expiring_contacts)} contactos expirando em {days_left} dias.")
+                for contact in expiring_contacts:
+                    already_sent_today = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub AND DATE(sent_at) = CURRENT_DATE"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
+                    if not already_sent_today:
+                        log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando aviso de expiração de {days_left} dias para {contact.get('Email')}.")
+                        send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
+                    else:
+                        log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Aviso de expiração de {days_left} dias já enviado hoje para {contact.get('Email')}. Pulando.")
 
 def background_worker_loop():
     """O loop principal do robô."""
@@ -341,6 +369,18 @@ def init_db_logic():
 @app.cli.command('init-db')
 def init_db_command(): init_db_logic()
 
+@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
+def secret_init_db():
+    try:
+        init_db_logic()
+        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA OU ALTERE ESTA ROTA AGORA POR MOTIVOS DE SEGURANÇA."
+        flash(message, "success")
+        return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
+    except Exception as e:
+        message = f"Erro ao reinicializar o banco de dados: {e}"
+        flash(message, "danger")
+        return f"<h1>Erro</h1><p>{message}</p>", 500
+
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -420,17 +460,17 @@ def inject_user_info():
         session.clear()
         return {}
     
+    # Feature calculation
     enabled_features = set()
     if user_data['role'] == 'admin':
         enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
     else:
-        enabled_features.add('mass-send')
-        if user_data.get('plan_id') and (not user_data.get('plan_expiration_date') or user_data['plan_expiration_date'] >= datetime.now(BR_TZ).date()):
-            plan_features = {row['slug'] for row in conn.execute(text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"), {'plan_id': user_data['plan_id']}).mappings().fetchall()}
-            enabled_features.update(plan_features)
+        # CORREÇÃO: Concede acesso visual a todas as funcionalidades para todos os utilizadores
+        enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
 
     session['user_features'] = list(enabled_features)
 
+    # Plan status and send limit calculation
     plan_status = {'plan_name': 'Grátis', 'badge_class': 'secondary', 'days_left': None}
     daily_limit = 25
     if user_data['role'] == 'admin':
