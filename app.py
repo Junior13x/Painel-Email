@@ -99,31 +99,30 @@ def send_emails_in_batches_worker(conn, user_settings, user_id, recipients, subj
     return sent_count, fail_count
 
 def process_user_tasks(conn, user):
-    """Processa TODAS as tarefas para UM usuário."""
+    """Processa TODAS as tarefas para UM usuário DENTRO DE UMA TRANSAÇÃO EXTERNA."""
     user_settings = dict(user)
     user_id = user_settings['id']
     log_to_db_worker(conn, 'INFO', f"Processando tarefas para o usuário: {user_settings['email']}")
 
     # --- TAREFA 1: Processar Envios em Massa (mass_send_jobs) ---
-    with conn.begin(): # Transação para esta tarefa
-        job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchone()
-        if job:
-            job_id = job['id']
-            log_to_db_worker(conn, 'WORKER', f"Iniciando job de envio em massa ID: {job_id}.")
-            try:
-                conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = NOW() WHERE id = :job_id"), {'job_id': job_id})
-                recipients = json.loads(job['recipients_json'])
-                sent, failed = send_emails_in_batches_worker(conn, user_settings, user_id, recipients, job['subject'], job['body'])
-                if user_settings['role'] != 'admin':
-                    current_user_state = conn.execute(text("SELECT sends_today, last_send_date FROM users WHERE id = :id FOR UPDATE"), {'id': user_id}).mappings().fetchone()
-                    sends_today = current_user_state['sends_today'] if current_user_state and current_user_state['last_send_date'] == datetime.now().date() else 0
-                    conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': datetime.now().date(), 'uid': user_id})
-                conn.execute(text("UPDATE mass_send_jobs SET status = 'completed', sent_count = :sc, error_message = NULL WHERE id = :job_id"), {'sc': sent, 'job_id': job_id})
-                log_to_db_worker(conn, 'WORKER', f"Job ID {job_id} concluído. {sent} enviados, {failed} falhas.")
-            except Exception as e:
-                error_msg = str(e)
-                log_to_db_worker(conn, 'ERROR', f"ERRO CRÍTICO no Job ID {job_id}: {error_msg}")
-                conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
+    job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchone()
+    if job:
+        job_id = job['id']
+        log_to_db_worker(conn, 'WORKER', f"Iniciando job de envio em massa ID: {job_id}.")
+        try:
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = NOW() WHERE id = :job_id"), {'job_id': job_id})
+            recipients = json.loads(job['recipients_json'])
+            sent, failed = send_emails_in_batches_worker(conn, user_settings, user_id, recipients, job['subject'], job['body'])
+            if user_settings['role'] != 'admin':
+                current_user_state = conn.execute(text("SELECT sends_today, last_send_date FROM users WHERE id = :id FOR UPDATE"), {'id': user_id}).mappings().fetchone()
+                sends_today = current_user_state['sends_today'] if current_user_state and current_user_state['last_send_date'] == datetime.now().date() else 0
+                conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': datetime.now().date(), 'uid': user_id})
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'completed', sent_count = :sc, error_message = NULL WHERE id = :job_id"), {'sc': sent, 'job_id': job_id})
+            log_to_db_worker(conn, 'WORKER', f"Job ID {job_id} concluído. {sent} enviados, {failed} falhas.")
+        except Exception as e:
+            error_msg = str(e)
+            log_to_db_worker(conn, 'ERROR', f"ERRO CRÍTICO no Job ID {job_id}: {error_msg}")
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
     
     # --- TAREFA 2 & 3: Agendamentos e Automações ---
     if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
@@ -132,20 +131,19 @@ def process_user_tasks(conn, user):
         
     all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
     
-    with conn.begin(): # Transação para esta tarefa
-        pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= NOW() FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchall()
-        for email_job in pending_emails:
-            recipients = []
-            if email_job['schedule_type'] == 'group':
-                target = email_job['status_target']
-                if target == 'all': recipients = all_contacts
-                else: recipients = [c for c in all_contacts if c.get('status_badge_class') == target]
-            elif email_job['schedule_type'] == 'manual' and email_job['manual_recipients']:
-                recipients = [{'Email': email.strip()} for email in email_job['manual_recipients'].split(',')]
-            if recipients:
-                log_to_db_worker(conn, 'WORKER', f"Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
-                send_emails_in_batches_worker(conn, user_settings, user_id, recipients, email_job['subject'], email_job['body'])
-            conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
+    pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= NOW() FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchall()
+    for email_job in pending_emails:
+        recipients = []
+        if email_job['schedule_type'] == 'group':
+            target = email_job['status_target']
+            if target == 'all': recipients = all_contacts
+            else: recipients = [c for c in all_contacts if c.get('status_badge_class') == target]
+        elif email_job['schedule_type'] == 'manual' and email_job['manual_recipients']:
+            recipients = [{'Email': email.strip()} for email in email_job['manual_recipients'].split(',')]
+        if recipients:
+            log_to_db_worker(conn, 'WORKER', f"Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
+            send_emails_in_batches_worker(conn, user_settings, user_id, recipients, email_job['subject'], email_job['body'])
+        conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
 
 def background_worker_loop():
     """O loop principal do robô. Robusto e com gestão de conexão própria."""
@@ -159,7 +157,9 @@ def background_worker_loop():
             active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
             for user in active_users:
                 try:
-                    process_user_tasks(conn, user)
+                    # Inicia uma transação para cada usuário. Se algo falhar, a transação faz rollback.
+                    with conn.begin(): 
+                        process_user_tasks(conn, user)
                 except Exception as user_error:
                     print(f"Erro ao processar usuário {user['email']}: {user_error}")
         except Exception as loop_error:
@@ -190,7 +190,6 @@ def initial_worker_start_hook():
     if not _initial_request_done:
         start_worker_once()
         _initial_request_done = True
-
 
 # ===============================================================
 # == 4. LÓGICA DE INICIALIZAÇÃO E HELPERS ==
