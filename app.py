@@ -62,7 +62,6 @@ def teardown_request_db_connection(exception=None):
 # ===============================================================
 # == 2. LÓGICA DO ROBÔ DE FUNDO (BACKGROUND WORKER) ==
 # ===============================================================
-# (Esta seção permanece igual à versão anterior, foi omitida para brevidade)
 def log_to_db_worker(level, message):
     log_conn = None
     try:
@@ -308,7 +307,6 @@ def init_db_logic():
                     sends_today INTEGER DEFAULT 0, last_send_date DATE,
                     is_verified BOOLEAN DEFAULT FALSE,
                     verification_code TEXT,
-                    -- NOVOS CAMPOS PARA SMTP DE VERIFICAÇÃO (APENAS PARA ADMIN)
                     verification_smtp_host TEXT,
                     verification_smtp_port INTEGER,
                     verification_smtp_user TEXT,
@@ -378,7 +376,6 @@ def send_verification_email(recipient_email, code):
     conn = None
     try:
         conn = db_engine.connect()
-        # Busca as credenciais de verificação do admin
         verification_settings = conn.execute(text("SELECT verification_smtp_host, verification_smtp_port, verification_smtp_user, verification_smtp_password FROM users WHERE role = 'admin' LIMIT 1")).mappings().fetchone()
         
         if not verification_settings or not all(verification_settings.values()):
@@ -423,7 +420,6 @@ def inject_user_info():
         session.clear()
         return {}
     
-    # Feature calculation
     enabled_features = set()
     if user_data['role'] == 'admin':
         enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
@@ -431,7 +427,6 @@ def inject_user_info():
         enabled_features = {row['slug'] for row in conn.execute(text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"), {'plan_id': user_data['plan_id']}).mappings().fetchall()}
     session['user_features'] = list(enabled_features)
 
-    # Plan status and send limit calculation
     plan_status = {'plan_name': 'Grátis', 'badge_class': 'secondary', 'days_left': None}
     daily_limit = 25
     if user_data['role'] == 'admin':
@@ -560,10 +555,8 @@ def register_page():
                 email_sent = send_verification_email(email, code)
                 if not email_sent:
                     flash("Não foi possível enviar o e-mail de verificação. Por favor, verifique se o admin configurou o SMTP corretamente.", "danger")
-                    # A transação será revertida pelo 'raise'
                     raise Exception("Falha no envio do e-mail de verificação.")
             
-            # Se a transação e o email foram bem-sucedidos
             flash("Conta criada! Enviámos um código de verificação para o seu e-mail.", "success")
             return redirect(url_for('verify_page', email=email))
         
@@ -571,7 +564,6 @@ def register_page():
             flash("Este e-mail já está cadastrado.", "danger")
         except Exception as e:
             print(f"Erro no registo: {e}")
-            # Não mostra a mensagem de erro detalhada para o utilizador
             flash("Ocorreu um erro inesperado durante o registo.", "danger")
             
     return render_template('register.html')
@@ -844,7 +836,7 @@ def settings_page():
                     if request.form.get('verification_smtp_password'):
                         update_fields['verification_smtp_password'] = request.form.get('verification_smtp_password')
 
-                set_clauses = [f"{key} = :{key}" for key in update_fields if key != 'verification_smtp_password']
+                set_clauses = [f"{key} = :{key}" for key in update_fields if key != 'verification_smtp_password' and key != 'smtp_password']
                 if 'verification_smtp_password' in update_fields:
                      set_clauses.append("verification_smtp_password = :verification_smtp_password")
                 
