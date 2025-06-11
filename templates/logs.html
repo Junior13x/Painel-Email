@@ -21,7 +21,7 @@
                 <table class="table table-sm table-striped table-hover">
                     <thead>
                         <tr class="table-light">
-                            <th style="width: 20%;">Data/Hora (UTC)</th>
+                            <th style="width: 20%;">Data/Hora (Brasília)</th>
                             <th style="width: 10%;">Nível</th>
                             <th>Mensagem</th>
                         </tr>
@@ -29,7 +29,7 @@
                     <tbody>
                         {% for log in logs %}
                         <tr>
-                            <td><code>{{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp }}</code></td>
+                            <td><code>{{ log.timestamp | br_time }}</code></td>
                             <td>
                                 {% if log.level == 'CRITICAL' or log.level == 'ERROR' %}
                                     <span class="badge bg-danger">{{ log.level }}</span>

@@ -5,72 +5,45 @@
 {% block content %}
 <div class="container mt-4 mb-5">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h1 class="h2">Histórico</h1>
+        <h1 class="h2">Histórico e Fila de Envios</h1>
         <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
     </div>
 
-    <!-- Tabela para Campanhas de Envio em Massa -->
-    <h4 class="mb-3">Status das Campanhas em Massa</h4>
+    <!-- Fila de Envios Pendentes -->
     <div class="card shadow-sm mb-5">
+        <div class="card-header">
+            <h4><i class="bi bi-clock-history"></i> Fila de Envios (Jobs Pendentes)</h4>
+        </div>
         <div class="card-body">
             <div class="table-responsive">
                 <table class="table table-hover align-middle">
                     <thead>
-                        <tr class="table-light">
-                            <th>ID</th>
+                        <tr>
+                            <th>Criado em (Brasília)</th>
                             <th>Assunto</th>
+                            <th>Total de Destinatários</th>
                             <th>Status</th>
-                            <th>Destinatários</th>
-                            <th>Enviados</th>
-                            <th>Agendada em</th>
-                            <th>Processada em</th>
-                            <th>Detalhes</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for job in jobs %}
                         <tr>
-                            <td><span class="badge bg-secondary">#{{ job.id }}</span></td>
+                            <td>{{ job.created_at | br_time }}</td>
                             <td>{{ job.subject }}</td>
-                            <td>
-                                {% if job.status == 'completed' %}
-                                    <span class="badge bg-success">Concluída</span>
-                                {% elif job.status == 'pending' %}
-                                    <span class="badge bg-warning text-dark">Pendente</span>
-                                {% elif job.status == 'processing' %}
-                                    <span class="badge bg-info text-dark">Processando...</span>
-                                {% elif job.status == 'failed' %}
-                                    <span class="badge bg-danger">Falhou</span>
-                                {% else %}
-                                    <span class="badge bg-secondary">{{ job.status }}</span>
-                                {% endif %}
-                            </td>
                             <td>{{ job.recipients_count }}</td>
-                            <td>{{ job.sent_count }}</td>
-                            <td>{{ job.created_at.strftime('%d/%m/%Y %H:%M') if job.created_at else 'N/A' }}</td>
-                            <td>{{ job.processed_at.strftime('%d/%m/%Y %H:%M') if job.processed_at else 'N/A' }}</td>
                             <td>
-                                {% if job.error_message %}
-                                    <button class="btn btn-sm btn-outline-danger" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ job.id }}" aria-expanded="false">
-                                        Ver Erro
-                                    </button>
+                                {% if job.status == 'pending' %}
+                                <span class="badge bg-warning text-dark">Pendente</span>
+                                {% elif job.status == 'processing' %}
+                                <span class="badge bg-info text-dark">Processando...</span>
                                 {% else %}
-                                    -
+                                <span class="badge bg-secondary">{{ job.status }}</span>
                                 {% endif %}
                             </td>
                         </tr>
-                        {% if job.error_message %}
-                        <tr class="collapse" id="collapse-{{ job.id }}">
-                            <td colspan="8">
-                                <div class="alert alert-danger mb-0">
-                                    <strong>Motivo da Falha:</strong> {{ job.error_message }}
-                                </div>
-                            </td>
-                        </tr>
-                        {% endif %}
                         {% else %}
                         <tr>
-                            <td colspan="8" class="text-center text-muted">Nenhuma campanha em massa foi agendada ainda.</td>
+                            <td colspan="4" class="text-center text-muted">Nenhum job na fila.</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -79,39 +52,35 @@
         </div>
     </div>
 
-    <!-- Tabela para Envios Individuais (do histórico antigo) -->
-    <h4 class="mb-3">Últimos Envios Individuais Registrados</h4>
-    <p class="text-muted">Esta seção mostra os e-mails individuais enviados com sucesso pelas suas campanhas e automações.</p>
+    <!-- Histórico de Envios Concluídos -->
     <div class="card shadow-sm">
+        <div class="card-header">
+            <h4><i class="bi bi-check2-circle"></i> Histórico de E-mails Enviados</h4>
+        </div>
         <div class="card-body">
             <div class="table-responsive">
                 <table class="table table-hover align-middle">
                     <thead>
-                        <tr class="table-light">
+                        <tr>
+                            <th>Enviado em (Brasília)</th>
                             <th>Destinatário</th>
                             <th>Assunto</th>
-                            <th>Data do Envio</th>
                             <th class="text-end">Ações</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for entry in history %}
                         <tr>
+                            <td>{{ entry.sent_at | br_time }}</td>
                             <td>{{ entry.recipient_email }}</td>
                             <td>{{ entry.subject }}</td>
-                            <td>{{ entry.sent_at.strftime('%d/%m/%Y %H:%M') if entry.sent_at else 'N/A' }}</td>
                             <td class="text-end">
-                                <button type="button" class="btn btn-sm btn-outline-info view-details-btn" data-id="{{ entry.id }}" data-bs-toggle="modal" data-bs-target="#detailsModal">
-                                    Detalhes
-                                </button>
-                                <form method="POST" action="{{ url_for('delete_history_entry', history_id=entry.id) }}" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir este registro do histórico?');">
-                                    <button type="submit" class="btn btn-sm btn-outline-danger">Excluir</button>
-                                </form>
+                                <button class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#detailsModal-{{ entry.id }}">Ver Detalhes</button>
                             </td>
                         </tr>
                         {% else %}
                         <tr>
-                            <td colspan="4" class="text-center text-muted">Nenhum envio individual registrado.</td>
+                            <td colspan="4" class="text-center text-muted">Nenhum e-mail no histórico.</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -121,89 +90,30 @@
     </div>
 </div>
 
-<!-- Modal de Detalhes -->
-<div class="modal fade" id="detailsModal" tabindex="-1" aria-labelledby="detailsModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="detailsModalLabel">Detalhes do E-mail Enviado</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <p><strong>Para:</strong> <span id="modal-recipient"></span></p>
-                <p><strong>Assunto:</strong> <span id="modal-subject"></span></p>
-                <p><strong>Enviado em:</strong> <span id="modal-sent-at"></span></p>
-                <hr>
-                <h6>Conteúdo do E-mail:</h6>
-                <iframe id="modal-body-iframe" style="width: 100%; height: 300px; border: 1px solid #ccc;"></iframe>
-            </div>
-            <div class="modal-footer justify-content-between">
-                <div>
-                    <form id="resend-form" method="POST" action="{{ url_for('resend_from_history') }}" class="d-inline">
-                        <input type="hidden" name="subject" id="resend-subject">
-                        <input type="hidden" name="body" id="resend-body">
-                        <button type="submit" class="btn btn-primary">Reenviar este E-mail</button>
-                    </form>
-                    <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#saveAsTemplateModal">Salvar como Modelo</button>
-                </div>
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
-            </div>
+<!-- Modais para Detalhes do Histórico -->
+{% for entry in history %}
+<div class="modal fade" id="detailsModal-{{ entry.id }}" tabindex="-1" aria-labelledby="detailsModalLabel-{{ entry.id }}" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="detailsModalLabel-{{ entry.id }}">Detalhes do E-mail</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p><strong>Para:</strong> {{ entry.recipient_email }}</p>
+        <p><strong>Assunto:</strong> {{ entry.subject }}</p>
+        <p><strong>Enviado em:</strong> {{ entry.sent_at | br_time }}</p>
+        <hr>
+        <h6>Conteúdo:</h6>
+        <div class="email-body-preview p-3 border rounded bg-light">
+            {{ entry.body | safe }}
         </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+      </div>
     </div>
+  </div>
 </div>
-
-<!-- Modal para Salvar como Modelo -->
-<div class="modal fade" id="saveAsTemplateModal" tabindex="-1" aria-labelledby="saveAsTemplateModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <form id="save-template-form" method="POST" action="{{ url_for('save_history_as_template') }}">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="saveAsTemplateModalLabel">Salvar como Novo Modelo</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <input type="hidden" name="subject" id="save-subject">
-                    <input type="hidden" name="body" id="save-body">
-                    <div class="mb-3">
-                        <label for="template_name" class="form-label">Nome para o novo modelo:</label>
-                        <input type="text" class="form-control" name="template_name" required>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                    <button type="submit" class="btn btn-primary">Salvar Modelo</button>
-                </div>
-            </form>
-        </div>
-    </div>
-</div>
-{% endblock %}
-
-{% block tail_scripts %}
-<script>
-document.querySelectorAll('.view-details-btn').forEach(button => {
-    button.addEventListener('click', function() {
-        const historyId = this.getAttribute('data-id');
-        fetch(`/history/details/${historyId}`)
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    alert(data.error);
-                    return;
-                }
-                document.getElementById('modal-recipient').textContent = data.recipient_email;
-                document.getElementById('modal-subject').textContent = data.subject;
-                document.getElementById('modal-sent-at').textContent = new Date(data.sent_at).toLocaleString('pt-BR');
-                
-                const iframe = document.getElementById('modal-body-iframe');
-                iframe.srcdoc = data.body;
-
-                document.getElementById('resend-subject').value = data.subject;
-                document.getElementById('resend-body').value = data.body;
-                document.getElementById('save-subject').value = data.subject;
-                document.getElementById('save-body').value = data.body;
-            });
-    });
-});
-</script>
+{% endfor %}
 {% endblock %}
