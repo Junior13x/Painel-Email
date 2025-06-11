@@ -243,7 +243,8 @@ def background_worker_loop():
         conn = None
         try:
             conn = db_engine.connect()
-            result = conn.execute(text("SELECT id FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE) OR (plan_id IS NULL)")).fetchall()
+            # CORREÇÃO: Busca todos os utilizadores verificados, incluindo os do plano Free (plan_id IS NULL)
+            result = conn.execute(text("SELECT id FROM users WHERE is_verified = TRUE")).fetchall()
             user_ids = [row[0] for row in result]
         except Exception as e:
             log_to_db_worker('CRITICAL', f"Erro ao buscar usuários ativos: {e}")
@@ -426,17 +427,9 @@ def inject_user_info():
         session.clear()
         return {}
     
-    # Feature calculation
-    enabled_features = set()
-    if user_data['role'] == 'admin':
-        enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
-    else:
-        # CORREÇÃO: Concede acesso base para utilizadores FREE e com plano
-        enabled_features.add('mass-send')
-        if user_data.get('plan_id') and (not user_data.get('plan_expiration_date') or user_data['plan_expiration_date'] >= datetime.now().date()):
-            plan_features = {row['slug'] for row in conn.execute(text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"), {'plan_id': user_data['plan_id']}).mappings().fetchall()}
-            enabled_features.update(plan_features) # Adiciona funcionalidades do plano pago
-
+    # CORREÇÃO: Concede acesso visual a todas as funcionalidades para todos os utilizadores
+    # A verificação de permissão de *uso* será feita dentro de cada rota.
+    enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
     session['user_features'] = list(enabled_features)
 
     # Plan status and send limit calculation
@@ -932,7 +925,13 @@ def templates_page():
 @feature_required('schedules')
 def schedule_page():
     conn, user_id = g.db_conn, session['user_id']
+    user_data = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+    
     if request.method == 'POST':
+        if user_data['role'] != 'admin' and not user_data.get('plan_id'):
+            flash("Agendamentos são uma funcionalidade exclusiva para planos pagos.", "warning")
+            return redirect(url_for('plans_page'))
+        
         subject, body, send_at_str = request.form.get('subject'), request.form.get('body'), request.form.get('send_at')
         schedule_type, status_target, manual_recipients = request.form.get('schedule_type'), None, None
         if schedule_type == 'group': status_target = request.form.get('status_target')
@@ -961,6 +960,11 @@ def edit_schedule(email_id):
     user_id = session['user_id']
     
     if request.method == 'POST':
+        user_data = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+        if user_data['role'] != 'admin' and not user_data.get('plan_id'):
+            flash("Agendamentos são uma funcionalidade exclusiva para planos pagos.", "warning")
+            return redirect(url_for('plans_page'))
+
         subject, body, send_at_str = request.form.get('subject'), request.form.get('body'), request.form.get('send_at')
         schedule_type, status_target, manual_recipients = request.form.get('schedule_type'), None, None
         if schedule_type == 'group': status_target = request.form.get('status_target')
@@ -1014,7 +1018,13 @@ def delete_schedule(email_id):
 def automations_page():
     user_id = session['user_id']
     conn = g.db_conn
+    user_data = conn.execute(text("SELECT * FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
+
     if request.method == 'POST':
+        if user_data['role'] != 'admin' and not user_data.get('plan_id'):
+            flash("Automações são uma funcionalidade exclusiva para planos pagos.", "warning")
+            return redirect(url_for('plans_page'))
+            
         automations = {
             'welcome': {
                 'enabled': 'welcome_enabled' in request.form,
@@ -1036,8 +1046,7 @@ def automations_page():
         flash('Configurações de automação salvas!', 'success')
         return redirect(url_for('automations_page'))
     
-    user = conn.execute(text("SELECT automations_config FROM users WHERE id = :uid"), {'uid': user_id}).mappings().fetchone()
-    automations_data = json.loads(user['automations_config']) if user and user['automations_config'] else {}
+    automations_data = json.loads(user_data['automations_config']) if user_data and user_data['automations_config'] else {}
     return render_template('automations.html', automations=automations_data)
 
 @app.route('/admin/logs')
