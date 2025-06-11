@@ -10,6 +10,8 @@ import re
 import json
 import smtplib
 import time
+import random
+import string
 from email.message import EmailMessage
 from functools import wraps
 from datetime import datetime, timedelta
@@ -60,9 +62,8 @@ def teardown_request_db_connection(exception=None):
 # ===============================================================
 # == 2. LÓGICA DO ROBÔ DE FUNDO (BACKGROUND WORKER) ==
 # ===============================================================
-
+# (Esta seção permanece igual à versão anterior, foi omitida para brevidade)
 def log_to_db_worker(level, message):
-    """Função de log que usa sua PRÓPRIA conexão para máxima robustez."""
     log_conn = None
     try:
         log_conn = db_engine.connect()
@@ -76,9 +77,8 @@ def log_to_db_worker(level, message):
     finally:
         if log_conn:
             log_conn.close()
-
+            
 def send_emails_in_batches_worker(conn, user_settings, user_id, recipients, subject, body):
-    """Função de envio de e-mails com LOGGING DETALHADO."""
     batch_size, delay_seconds, smtp_port = int(user_settings.get('batch_size') or 15), int(user_settings.get('delay_seconds') or 60), int(user_settings.get('smtp_port') or 587)
     sent_count, fail_count = 0, 0
     log_to_db_worker('INFO', f"User {user_id}: Iniciando função de envio para {len(recipients)} destinatários.")
@@ -118,12 +118,10 @@ def send_emails_in_batches_worker(conn, user_settings, user_id, recipients, subj
     return sent_count, fail_count
 
 def process_user_tasks(conn, user):
-    """Processa TODAS as tarefas para UM usuário DENTRO DE UMA TRANSAÇÃO EXTERNA."""
     user_settings = dict(user)
     user_id = user_settings['id']
     log_to_db_worker('INFO', f"Processando tarefas para o usuário: {user_settings['email']} (ID: {user_id}).")
 
-    # --- TAREFA 1: Processar Envios em Massa (mass_send_jobs) ---
     job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchone()
     if job:
         job_id = job['id']
@@ -144,14 +142,12 @@ def process_user_tasks(conn, user):
             conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
             raise 
 
-    # --- TAREFA 2: Agendamentos e Automações ---
     if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
         log_to_db_worker('DEBUG', f"User {user_id}: Configurações incompletas para Agendamentos/Automações. Pulando.")
         return
         
     all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
     
-    # Lógica de Agendamentos
     pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= NOW() FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchall()
     if pending_emails:
         log_to_db_worker('INFO', f"User {user_id}: {len(pending_emails)} agendamento(s) encontrado(s).")
@@ -168,13 +164,11 @@ def process_user_tasks(conn, user):
                 send_emails_in_batches_worker(conn, user_settings, user_id, recipients, email_job['subject'], email_job['body'])
             conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
 
-    # Lógica de Automações
     automations = json.loads(user_settings.get('automations_config') or '{}')
     if not automations:
         log_to_db_worker('DEBUG', f"User {user_id}: Nenhuma configuração de automação encontrada.")
         return
 
-    # Automação de Boas-Vindas
     welcome_config = automations.get('welcome', {})
     if welcome_config.get('enabled'):
         log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de boas-vindas.")
@@ -213,7 +207,6 @@ def process_user_tasks(conn, user):
                     else:
                         log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: E-mail de boas-vindas já enviado para {contact.get('Email')}. Pulando.")
     
-    # Automação de Expiração
     expiry_config = automations.get('expiry', {})
     if expiry_config.get('enabled'):
         log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de expiração.")
@@ -231,7 +224,7 @@ def process_user_tasks(conn, user):
                         log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Aviso de expiração de {days_left} dias já enviado hoje para {contact.get('Email')}. Pulando.")
 
 def background_worker_loop():
-    """O loop principal do robô, agora com gestão de transação corrigida."""
+    """O loop principal do robô."""
     log_to_db_worker('INFO', "--- 🤖 Robô de Fundo (Greenlet) Iniciado ---")
     while True:
         gevent.sleep(60)
@@ -309,9 +302,17 @@ def init_db_logic():
                 CREATE TABLE users (
                     id SERIAL PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', 
                     plan_id INTEGER REFERENCES plans(id) ON DELETE SET NULL, plan_expiration_date DATE,
-                    baserow_host TEXT, baserow_api_key TEXT, baserow_table_id TEXT, smtp_host TEXT, smtp_port INTEGER, 
-                    smtp_user TEXT, smtp_password TEXT, batch_size INTEGER, delay_seconds INTEGER, automations_config TEXT,
-                    sends_today INTEGER DEFAULT 0, last_send_date DATE
+                    baserow_host TEXT, baserow_api_key TEXT, baserow_table_id TEXT, 
+                    smtp_host TEXT, smtp_port INTEGER, smtp_user TEXT, smtp_password TEXT, 
+                    batch_size INTEGER, delay_seconds INTEGER, automations_config TEXT,
+                    sends_today INTEGER DEFAULT 0, last_send_date DATE,
+                    is_verified BOOLEAN DEFAULT FALSE,
+                    verification_code TEXT,
+                    -- NOVOS CAMPOS PARA SMTP DE VERIFICAÇÃO (APENAS PARA ADMIN)
+                    verification_smtp_host TEXT,
+                    verification_smtp_port INTEGER,
+                    verification_smtp_user TEXT,
+                    verification_smtp_password TEXT
                 );"""))
             conn.execute(text("CREATE TABLE plan_features (plan_id INTEGER REFERENCES plans(id) ON DELETE CASCADE, feature_id INTEGER REFERENCES features(id) ON DELETE CASCADE, PRIMARY KEY (plan_id, feature_id));"))
             conn.execute(text("CREATE TABLE envio_historico (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), recipient_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT, sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);"))
@@ -333,7 +334,7 @@ def init_db_logic():
             default_email = 'junior@admin.com'
             default_pass = '130896'
             password_hash = generate_password_hash(default_pass)
-            conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:email, :password_hash, 'admin')"), {'email': default_email, 'password_hash': password_hash})
+            conn.execute(text("INSERT INTO users (email, password_hash, role, is_verified) VALUES (:email, :password_hash, 'admin', TRUE)"), {'email': default_email, 'password_hash': password_hash})
             print(f"ADMIN PADRÃO CRIADO! E-mail: {default_email}")
 
     finally:
@@ -372,6 +373,47 @@ def feature_required(feature_slug):
         return decorated_function
     return decorator
 
+def send_verification_email(recipient_email, code):
+    """Envia o e-mail de verificação usando as credenciais de verificação do sistema."""
+    conn = None
+    try:
+        conn = db_engine.connect()
+        # Busca as credenciais de verificação do admin
+        verification_settings = conn.execute(text("SELECT verification_smtp_host, verification_smtp_port, verification_smtp_user, verification_smtp_password FROM users WHERE role = 'admin' LIMIT 1")).mappings().fetchone()
+        
+        if not verification_settings or not all(verification_settings.values()):
+            log_to_db_worker('CRITICAL', "Credenciais SMTP de Verificação não configuradas pelo admin. Não é possível enviar e-mail.")
+            return False
+
+        subject = f"Seu código de verificação é: {code}"
+        body = f"""
+        <h1>Bem-vindo ao Painel de E-mails!</h1>
+        <p>Para ativar a sua conta, por favor use o seguinte código de verificação:</p>
+        <h2 style="color: #333; text-align: center; letter-spacing: 2px;">{code}</h2>
+        <p>Se não foi você que se registou, pode ignorar este e-mail.</p>
+        """
+        
+        msg = EmailMessage()
+        msg['Subject'] = subject
+        msg['From'] = verification_settings['verification_smtp_user']
+        msg['To'] = recipient_email
+        msg.add_alternative(body, subtype='html')
+
+        with smtplib.SMTP(str(verification_settings['verification_smtp_host']), int(verification_settings['verification_smtp_port']), timeout=20) as server:
+            server.starttls()
+            server.login(verification_settings['verification_smtp_user'], verification_settings['verification_smtp_password'])
+            server.send_message(msg)
+        
+        log_to_db_worker('INFO', f"E-mail de verificação enviado com sucesso para {recipient_email}.")
+        return True
+
+    except Exception as e:
+        log_to_db_worker('ERROR', f"Falha ao enviar e-mail de verificação para {recipient_email}: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
 @app.context_processor
 def inject_user_info():
     if 'user_id' not in session: return {}
@@ -406,7 +448,7 @@ def inject_user_info():
         else:
              plan_status = {'plan_name': plan_name, 'badge_class': 'success', 'days_left': 9999}
 
-    sends_today = user_data['sends_today'] if user_data['last_send_date'] == datetime.now().date() else 0
+    sends_today = user_data['sends_today'] if user_data.get('last_send_date') == datetime.now().date() else 0
     sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
 
     return dict(
@@ -481,11 +523,16 @@ def login_page():
     if request.method == 'POST':
         email, password = request.form.get('email'), request.form.get('password')
         user = g.db_conn.execute(text("SELECT * FROM users WHERE email = :email"), {'email': email}).mappings().fetchone()
-        if user and check_password_hash(user['password_hash'], password):
+        
+        if not user or not check_password_hash(user['password_hash'], password):
+            flash("E-mail ou senha inválidos.", "danger")
+        elif not user['is_verified']:
+            flash("A sua conta ainda não foi verificada. Por favor, verifique o seu e-mail ou registe-se novamente.", "warning")
+            return redirect(url_for('verify_page', email=email))
+        else:
             session.update({'logged_in': True, 'user_id': user['id'], 'user_email': user['email'], 'role': user['role']})
             return redirect(url_for('dashboard'))
-        else:
-            flash("E-mail ou senha inválidos.", "danger")
+
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -493,14 +540,63 @@ def register_page():
     if 'logged_in' in session: return redirect(url_for('dashboard'))
     if request.method == 'POST':
         email, password = request.form.get('email'), request.form.get('password')
+        
+        conn = g.db_conn
         try:
-            with g.db_conn.begin():
-                g.db_conn.execute(text("INSERT INTO users (email, password_hash) VALUES (:email, :ph)"), {'email': email, 'ph': generate_password_hash(password)})
-            flash("Conta criada com sucesso! Faça seu login.", "success")
-            return redirect(url_for('login_page'))
+            with conn.begin():
+                existing_user = conn.execute(text("SELECT * FROM users WHERE email = :email"), {'email': email}).mappings().fetchone()
+                if existing_user:
+                    flash("Este e-mail já está cadastrado.", "danger")
+                    return redirect(url_for('register_page'))
+
+                code = ''.join(random.choices(string.digits, k=6))
+                hashed_password = generate_password_hash(password)
+
+                conn.execute(text("""
+                    INSERT INTO users (email, password_hash, verification_code, is_verified) 
+                    VALUES (:email, :ph, :code, FALSE)
+                """), {'email': email, 'ph': hashed_password, 'code': code})
+
+                email_sent = send_verification_email(email, code)
+                if not email_sent:
+                    flash("Não foi possível enviar o e-mail de verificação. Por favor, verifique se o admin configurou o SMTP corretamente.", "danger")
+                    # A transação será revertida pelo 'raise'
+                    raise Exception("Falha no envio do e-mail de verificação.")
+            
+            # Se a transação e o email foram bem-sucedidos
+            flash("Conta criada! Enviámos um código de verificação para o seu e-mail.", "success")
+            return redirect(url_for('verify_page', email=email))
+        
         except sqlalchemy_exc.IntegrityError:
             flash("Este e-mail já está cadastrado.", "danger")
+        except Exception as e:
+            print(f"Erro no registo: {e}")
+            # Não mostra a mensagem de erro detalhada para o utilizador
+            flash("Ocorreu um erro inesperado durante o registo.", "danger")
+            
     return render_template('register.html')
+
+@app.route('/verify', methods=['GET', 'POST'])
+def verify_page():
+    email = request.args.get('email')
+    if not email:
+        return redirect(url_for('login_page'))
+
+    if request.method == 'POST':
+        code = request.form.get('code')
+        conn = g.db_conn
+        
+        with conn.begin():
+            user = conn.execute(text("SELECT * FROM users WHERE email = :email"), {'email': email}).mappings().fetchone()
+            if user and not user['is_verified'] and user['verification_code'] == code:
+                conn.execute(text("UPDATE users SET is_verified = TRUE, verification_code = NULL WHERE id = :id"), {'id': user['id']})
+                flash("Conta verificada com sucesso! Já pode fazer login.", "success")
+                return redirect(url_for('login_page'))
+            else:
+                flash("Código de verificação inválido ou a conta já foi verificada.", "danger")
+    
+    return render_template('verify.html', email=email)
+
 
 @app.route('/logout')
 @login_required
@@ -526,7 +622,7 @@ def users_page():
         email, password, role = request.form.get('email'), request.form.get('password'), request.form.get('role', 'user')
         if email and password:
             try:
-                with conn.begin(): conn.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:e, :ph, :r)"), {'e': email, 'ph': generate_password_hash(password), 'r': role})
+                with conn.begin(): conn.execute(text("INSERT INTO users (email, password_hash, role, is_verified) VALUES (:e, :ph, :r, TRUE)"), {'e': email, 'ph': generate_password_hash(password), 'r': role})
                 flash(f"Usuário '{email}' criado!", "success")
             except sqlalchemy_exc.IntegrityError: flash(f"O e-mail '{email}' já existe.", "danger")
         else: flash("E-mail e senha são obrigatórios.", "warning")
@@ -729,31 +825,48 @@ def mass_send_page():
 def settings_page():
     conn, user_id = g.db_conn, session['user_id']
     is_admin = session.get('role') == 'admin'
+    
     if request.method == 'POST':
         try:
             with conn.begin():
+                # Campos para todos os utilizadores
                 automations = {'welcome': {'enabled': 'welcome_enabled' in request.form, 'subject': request.form.get('welcome_subject'), 'body': request.form.get('welcome_body')}, 'expiry': {'enabled': 'expiry_enabled' in request.form, 'subject_7_days': request.form.get('expiry_7_days_subject'), 'body_7_days': request.form.get('expiry_7_days_body'), 'subject_3_days': request.form.get('expiry_3_days_subject'), 'body_3_days': request.form.get('expiry_3_days_body'), 'subject_1_day': request.form.get('expiry_1_day_subject'), 'body_1_day': request.form.get('expiry_1_day_body')}}
                 update_fields = {k: request.form.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id', 'smtp_host', 'smtp_user']}
                 update_fields.update({'smtp_port': int(request.form.get('smtp_port') or 587), 'batch_size': int(request.form.get('batch_size') or 15), 'delay_seconds': int(request.form.get('delay_seconds') or 60), 'automations_config': json.dumps(automations)})
-                set_clauses = [f"{key} = :{key}" for key in update_fields]
+                
+                # Campos apenas para o admin
+                if is_admin:
+                    update_fields.update({
+                        'verification_smtp_host': request.form.get('verification_smtp_host'),
+                        'verification_smtp_port': int(request.form.get('verification_smtp_port') or 587),
+                        'verification_smtp_user': request.form.get('verification_smtp_user')
+                    })
+                    if request.form.get('verification_smtp_password'):
+                        update_fields['verification_smtp_password'] = request.form.get('verification_smtp_password')
+
+                set_clauses = [f"{key} = :{key}" for key in update_fields if key != 'verification_smtp_password']
+                if 'verification_smtp_password' in update_fields:
+                     set_clauses.append("verification_smtp_password = :verification_smtp_password")
+                
                 if request.form.get('smtp_password'):
                     set_clauses.append("smtp_password = :smtp_password")
                     update_fields['smtp_password'] = request.form.get('smtp_password')
+                
                 conn.execute(text(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = :user_id"), {**update_fields, 'user_id': user_id})
+
             flash("Configurações salvas!", "success")
-        except Exception as e: flash(f"Erro ao salvar configurações: {e}", "danger")
+        except Exception as e: 
+            flash(f"Erro ao salvar configurações: {e}", "danger")
         return redirect(url_for('settings_page'))
     
     user_settings_row = conn.execute(text('SELECT * FROM users WHERE id = :uid'), {'uid': user_id}).mappings().fetchone()
     user_settings = dict(user_settings_row) if user_settings_row else {}
-    if user_settings.get('automations_config'): user_settings['automations_config'] = json.loads(user_settings['automations_config'])
-    else: user_settings['automations_config'] = {}
-    
-    global_settings = {}
-    if is_admin:
-        global_settings['MERCADO_PAGO_ACCESS_TOKEN'] = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', '')
+    if user_settings.get('automations_config'): 
+        user_settings['automations_config'] = json.loads(user_settings['automations_config'])
+    else: 
+        user_settings['automations_config'] = {}
         
-    return render_template('settings.html', user_settings=user_settings, global_settings=global_settings)
+    return render_template('settings.html', user_settings=user_settings)
 
 @app.route('/history', methods=['GET'])
 @login_required

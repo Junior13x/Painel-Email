@@ -1,87 +1,121 @@
 {% extends "base.html" %}
 
-{% block title %}Configurações{% endblock %}
+{% block title %}Configurações - Painel de E-mails{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center">
-    <h1>Configurações da Conta</h1>
-    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
+<div class="container my-5">
+    <h1 class="mb-4">Configurações</h1>
+
+    <form method="POST">
+        <!-- SEÇÃO APENAS PARA ADMIN -->
+        {% if is_admin %}
+        <div class="card mb-4 border-danger">
+            <div class="card-header bg-danger-subtle text-danger-emphasis">
+                <i class="bi bi-shield-lock-fill"></i>
+                Configurações de Administrador
+            </div>
+            <div class="card-body">
+                <h5 class="card-title">SMTP para E-mails de Verificação</h5>
+                <p class="card-text">Estas credenciais serão usadas para enviar códigos de verificação para novos utilizadores. Devem ser de um e-mail de sistema (ex: nao-responda@seudominio.com).</p>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="verification_smtp_host" class="form-label">Host SMTP de Verificação</label>
+                        <input type="text" class="form-control" id="verification_smtp_host" name="verification_smtp_host" value="{{ user_settings.verification_smtp_host or '' }}">
+                    </div>
+                    <div class="col-md-2 mb-3">
+                        <label for="verification_smtp_port" class="form-label">Porta</label>
+                        <input type="number" class="form-control" id="verification_smtp_port" name="verification_smtp_port" value="{{ user_settings.verification_smtp_port or '587' }}">
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label for="verification_smtp_user" class="form-label">Utilizador SMTP de Verificação</label>
+                        <input type="email" class="form-control" id="verification_smtp_user" name="verification_smtp_user" value="{{ user_settings.verification_smtp_user or '' }}">
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label for="verification_smtp_password" class="form-label">Senha SMTP de Verificação</label>
+                    <input type="password" class="form-control" id="verification_smtp_password" name="verification_smtp_password" placeholder="Deixe em branco para não alterar">
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <!-- CONFIGURAÇÕES DE CAMPANHAS PESSOAIS -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-person-gear"></i>
+                Configurações de Campanhas (Pessoais)
+            </div>
+            <div class="card-body">
+                <h5 class="card-title">Suas Credenciais SMTP</h5>
+                 <p class="card-text">Estas são as suas credenciais pessoais para o envio de campanhas (em massa, agendamentos, etc.).</p>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="smtp_host" class="form-label">Seu Host SMTP</label>
+                        <input type="text" class="form-control" id="smtp_host" name="smtp_host" value="{{ user_settings.smtp_host or '' }}" required>
+                    </div>
+                     <div class="col-md-2 mb-3">
+                        <label for="smtp_port" class="form-label">Porta</label>
+                        <input type="number" class="form-control" id="smtp_port" name="smtp_port" value="{{ user_settings.smtp_port or '587' }}" required>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label for="smtp_user" class="form-label">Seu Utilizador SMTP</label>
+                        <input type="email" class="form-control" id="smtp_user" name="smtp_user" value="{{ user_settings.smtp_user or '' }}" required>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label for="smtp_password" class="form-label">Sua Senha SMTP</label>
+                    <input type="password" class="form-control" id="smtp_password" name="smtp_password" placeholder="Deixe em branco para não alterar">
+                </div>
+            </div>
+        </div>
+
+        <!-- CONFIGURAÇÕES BASEROW -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-database-fill-gear"></i>
+                Configurações do Baserow
+            </div>
+            <div class="card-body">
+                 <div class="mb-3">
+                    <label for="baserow_host" class="form-label">Host do Baserow</label>
+                    <input type="url" class="form-control" id="baserow_host" name="baserow_host" value="{{ user_settings.baserow_host or '' }}" placeholder="ex: https://api.baserow.io" required>
+                </div>
+                <div class="mb-3">
+                    <label for="baserow_api_key" class="form-label">API Key</label>
+                    <input type="text" class="form-control" id="baserow_api_key" name="baserow_api_key" value="{{ user_settings.baserow_api_key or '' }}" required>
+                </div>
+                <div class="mb-3">
+                    <label for="baserow_table_id" class="form-label">Table ID</label>
+                    <input type="text" class="form-control" id="baserow_table_id" name="baserow_table_id" value="{{ user_settings.baserow_table_id or '' }}" required>
+                </div>
+            </div>
+        </div>
+
+        <!-- CONFIGURAÇÕES DE ENVIO -->
+        <div class="card mb-4">
+             <div class="card-header">
+                <i class="bi bi-sliders"></i>
+                Parâmetros de Envio
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="batch_size" class="form-label">Tamanho do Lote</label>
+                        <input type="number" class="form-control" id="batch_size" name="batch_size" value="{{ user_settings.batch_size or 15 }}">
+                        <div class="form-text">Número de e-mails enviados por vez.</div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="delay_seconds" class="form-label">Atraso entre Lotes (segundos)</label>
+                        <input type="number" class="form-control" id="delay_seconds" name="delay_seconds" value="{{ user_settings.delay_seconds or 60 }}">
+                        <div class="form-text">Tempo de espera antes de enviar o próximo lote.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="d-grid">
+            <button type="submit" class="btn btn-primary btn-lg">Salvar Todas as Configurações</button>
+        </div>
+    </form>
 </div>
-<p>Ajuste aqui suas configurações pessoais de conexão com o Baserow e de envio de e-mails.</p>
-
-{% with messages = get_flashed_messages(with_categories=true) %}
-  {% if messages %}
-    {% for category, message in messages %}
-      <div class="alert alert-{{ category }} mt-3">{{ message }}</div>
-    {% endfor %}
-  {% endif %}
-{% endwith %}
-
-<hr>
-
-<form method="POST">
-    {% if session.get('role') == 'admin' %}
-    <h4 class="mb-3 text-primary">Configurações da Plataforma (Admin)</h4>
-    <div class="mb-3">
-        <label for="mp_access_token" class="form-label">Mercado Pago - Access Token</label>
-        <input type="password" class="form-control" id="mp_access_token" name="mp_access_token" value="{{ global_settings.get('MERCADO_PAGO_ACCESS_TOKEN', '') }}">
-        <div class="form-text">Sua chave privada de produção do Mercado Pago.</div>
-    </div>
-
-    <hr class="my-4">
-{% endif %}
-
-    <h4 class="mb-3">Configurações do Baserow</h4>
-    <div class="mb-3">
-        <label for="baserow_host" class="form-label">Host do Baserow</label>
-        <input type="text" class="form-control" id="baserow_host" name="baserow_host" value="{{ user_settings['baserow_host'] or '' }}" placeholder="Ex: http://213.199.56.115">
-    </div>
-    <div class="mb-3">
-        <label for="baserow_api_key" class="form-label">Chave de API (Token)</label>
-        <input type="text" class="form-control" id="baserow_api_key" name="baserow_api_key" value="{{ user_settings['baserow_api_key'] or '' }}">
-    </div>
-    <div class="mb-3">
-        <label for="baserow_table_id" class="form-label">ID da Tabela</label>
-        <input type="text" class="form-control" id="baserow_table_id" name="baserow_table_id" value="{{ user_settings['baserow_table_id'] or '' }}">
-    </div>
-
-    <hr class="my-4">
-    <h4 class="mb-3">Configurações de Envio de E-mail (SMTP)</h4>
-    <div class="row">
-        <div class="col-md-8">
-            <label for="smtp_host" class="form-label">Servidor SMTP</label>
-            <input type="text" class="form-control" id="smtp_host" name="smtp_host" value="{{ user_settings['smtp_host'] or '' }}" placeholder="Ex: smtp.gmail.com">
-        </div>
-        <div class="col-md-4">
-            <label for="smtp_port" class="form-label">Porta SMTP</label>
-            <input type="number" class="form-control" id="smtp_port" name="smtp_port" value="{{ user_settings['smtp_port'] or 587 }}" placeholder="Ex: 587">
-        </div>
-    </div>
-    <div class="mb-3 mt-3">
-        <label for="smtp_user" class="form-label">Usuário SMTP (seu e-mail de envio)</label>
-        <input type="email" class="form-control" id="smtp_user" name="smtp_user" value="{{ user_settings['smtp_user'] or '' }}">
-    </div>
-    <div class="mb-3">
-        <label for="smtp_password" class="form-label">Senha SMTP (ou Senha de App)</label>
-        <input type="password" class="form-control" id="smtp_password" name="smtp_password" value="{{ user_settings['smtp_password'] or '' }}">
-    </div>
-
-    <hr class="my-4">
-    <h4 class="mb-3">Controle de Velocidade de Envio (Throttling)</h4>
-    <p class="text-muted">Evite bloqueios de spam configurando o envio em lotes.</p>
-    <div class="row">
-        <div class="col-md-6 mb-3">
-            <label for="batch_size" class="form-label">Tamanho do Lote</label>
-            <input type="number" class="form-control" id="batch_size" name="batch_size" value="{{ user_settings['batch_size'] or 15 }}">
-            <div class="form-text">Quantos e-mails enviar por vez.</div>
-        </div>
-        <div class="col-md-6 mb-3">
-            <label for="delay_seconds" class="form-label">Intervalo entre Lotes (em segundos)</label>
-            <input type="number" class="form-control" id="delay_seconds" name="delay_seconds" value="{{ user_settings['delay_seconds'] or 60 }}">
-            <div class="form-text">Quantos segundos aguardar antes de enviar o próximo lote.</div>
-        </div>
-    </div>
-
-    <button type="submit" class="btn btn-primary mt-3">Salvar Minhas Configurações</button>
-</form>
 {% endblock %}
