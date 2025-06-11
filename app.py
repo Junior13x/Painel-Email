@@ -144,6 +144,7 @@ def process_user_tasks(conn, user):
     user_id = user_settings['id']
     log_to_db_worker('INFO', f"Processando tarefas para o usuário: {user_settings['email']} (ID: {user_id}).")
 
+    # --- TAREFA 1: Processar Envios em Massa (mass_send_jobs) ---
     job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchone()
     if job:
         job_id = job['id']
@@ -164,12 +165,14 @@ def process_user_tasks(conn, user):
             conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
             raise 
 
+    # --- TAREFA 2: Agendamentos e Automações ---
     if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
         log_to_db_worker('DEBUG', f"User {user_id}: Configurações incompletas para Agendamentos/Automações. Pulando.")
         return
         
     all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
     
+    # Lógica de Agendamentos
     pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= :now FOR UPDATE SKIP LOCKED"), {'uid': user_id, 'now': datetime.now(BR_TZ)}).mappings().fetchall()
     if pending_emails:
         log_to_db_worker('INFO', f"User {user_id}: {len(pending_emails)} agendamento(s) encontrado(s).")
@@ -186,11 +189,13 @@ def process_user_tasks(conn, user):
                 send_emails_in_batches_worker(conn, user_settings, user_id, recipients, email_job['subject'], email_job['body'])
             conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
 
+    # Lógica de Automações
     automations = json.loads(user_settings.get('automations_config') or '{}')
     if not automations:
         log_to_db_worker('DEBUG', f"User {user_id}: Nenhuma configuração de automação encontrada.")
         return
 
+    # Automação de Boas-Vindas
     welcome_config = automations.get('welcome', {})
     if welcome_config.get('enabled'):
         log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de boas-vindas.")
@@ -216,6 +221,7 @@ def process_user_tasks(conn, user):
                 if days_diff < 1:
                     pass
 
+    # Automação de Expiração
     expiry_config = automations.get('expiry', {})
     if expiry_config.get('enabled'):
         pass
@@ -846,9 +852,27 @@ def settings_page():
 @feature_required('mass-send')
 def history_page():
     conn = g.db_conn
-    jobs = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid ORDER BY created_at DESC LIMIT 50"), {'uid': session['user_id']}).mappings().fetchall()
-    history = conn.execute(text("SELECT * FROM envio_historico WHERE user_id = :uid ORDER BY sent_at DESC LIMIT 100"), {'uid': session['user_id']}).mappings().fetchall()
-    return render_template('history.html', jobs=jobs, history=history)
+    user_id = session['user_id']
+    
+    pending_jobs = conn.execute(
+        text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status IN ('pending', 'processing') ORDER BY created_at DESC"),
+        {'uid': user_id}
+    ).mappings().fetchall()
+
+    completed_jobs = conn.execute(
+        text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status IN ('completed', 'failed') ORDER BY created_at DESC LIMIT 50"),
+        {'uid': user_id}
+    ).mappings().fetchall()
+
+    history = conn.execute(
+        text("SELECT * FROM envio_historico WHERE user_id = :uid ORDER BY sent_at DESC LIMIT 100"),
+        {'uid': user_id}
+    ).mappings().fetchall()
+
+    return render_template('history.html', 
+                           pending_jobs=pending_jobs, 
+                           completed_jobs=completed_jobs, 
+                           history=history)
 
 @app.route('/history/details/<int:history_id>')
 @login_required
