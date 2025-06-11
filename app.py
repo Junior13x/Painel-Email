@@ -170,35 +170,43 @@ def process_user_tasks(conn, user):
             conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
 
 def background_worker_loop():
-    """O loop principal do robô."""
+    """O loop principal do robô, agora com gestão de transação corrigida."""
     log_to_db_worker('INFO', "--- 🤖 Robô de Fundo (Greenlet) Iniciado ---")
     while True:
         gevent.sleep(60)
+        log_to_db_worker('INFO', "Ciclo de verificação do robô iniciado.")
+        
+        user_ids = []
         conn = None
         try:
-            log_to_db_worker('INFO', "Ciclo de verificação do robô iniciado.")
             conn = db_engine.connect()
-            log_to_db_worker('INFO', 'Conexão com DB estabelecida pelo robô.')
-
-            active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
-            if not active_users:
-                log_to_db_worker('DEBUG', "Nenhum usuário ativo para processar.")
-            else:
-                log_to_db_worker('INFO', f"Encontrados {len(active_users)} usuários ativos.")
-            
-            for user in active_users:
-                try:
-                    with conn.begin(): 
-                        process_user_tasks(conn, user)
-                except Exception as user_error:
-                    log_to_db_worker('ERROR', f"ERRO na transação para o usuário {user['email']}. O trabalho foi revertido. Erro: {user_error}")
-        
-        except Exception as loop_error:
-            log_to_db_worker('CRITICAL', f"--- ERRO CRÍTICO NO LOOP DO ROBÔ: {loop_error} ---")
+            result = conn.execute(text("SELECT id FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).fetchall()
+            user_ids = [row[0] for row in result]
+        except Exception as e:
+            log_to_db_worker('CRITICAL', f"Erro ao buscar usuários ativos: {e}")
         finally:
-            if conn:
-                conn.close()
-                log_to_db_worker('INFO', 'Conexão do robô com DB fechada no final do ciclo.')
+            if conn: conn.close()
+        
+        if not user_ids:
+            log_to_db_worker('DEBUG', "Nenhum usuário ativo para processar neste ciclo.")
+            continue
+
+        log_to_db_worker('INFO', f"Encontrados {len(user_ids)} usuários ativos para processar.")
+        
+        for user_id in user_ids:
+            user_conn = None
+            try:
+                user_conn = db_engine.connect()
+                with user_conn.begin():
+                    user = user_conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+                    if user:
+                        process_user_tasks(user_conn, user)
+            except Exception as user_error:
+                log_to_db_worker('ERROR', f"ERRO na transação para o usuário ID {user_id}. O trabalho foi revertido. Erro: {user_error}")
+            finally:
+                if user_conn: user_conn.close()
+        
+        log_to_db_worker('INFO', 'Ciclo do robô concluído.')
 
 # ===============================================================
 # == 3. INICIALIZAÇÃO SEGURA DO ROBÔ (UMA ÚNICA VEZ) ==
