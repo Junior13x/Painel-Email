@@ -347,6 +347,19 @@ def init_db_logic():
 @app.cli.command('init-db')
 def init_db_command(): init_db_logic()
 
+# ROTA SECRETA PARA INICIALIZAR O BANCO DE DADOS EM PRODUÇÃO
+@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
+def secret_init_db():
+    try:
+        init_db_logic()
+        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA OU ALTERE ESTA ROTA AGORA POR MOTIVOS DE SEGURANÇA."
+        flash(message, "success")
+        return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
+    except Exception as e:
+        message = f"Erro ao reinicializar o banco de dados: {e}"
+        flash(message, "danger")
+        return f"<h1>Erro</h1><p>{message}</p>", 500
+
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
