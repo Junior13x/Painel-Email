@@ -38,6 +38,7 @@ BR_TZ = pytz.timezone('America/Sao_Paulo')
 # ===============================================================
 # == FILTRO JINJA2 PARA FUSO HORÁRIO ==
 # ===============================================================
+@app.template_filter('br_time')
 def format_datetime_br(value, format='%d/%m/%Y %H:%M:%S'):
     """Filtro para formatar datas no fuso horário de Brasília."""
     if value is None:
@@ -47,9 +48,6 @@ def format_datetime_br(value, format='%d/%m/%Y %H:%M:%S'):
     
     local_time = value.astimezone(BR_TZ)
     return local_time.strftime(format)
-
-# REGISTO EXPLÍCITO DO FILTRO NO AMBIENTE DO FLASK
-app.jinja_env.filters['br_time'] = format_datetime_br
 
 
 # ===============================================================
@@ -416,7 +414,6 @@ def inject_user_info():
         session.clear()
         return {}
     
-    # Feature calculation
     enabled_features = set()
     if user_data['role'] == 'admin':
         enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
@@ -428,7 +425,6 @@ def inject_user_info():
 
     session['user_features'] = list(enabled_features)
 
-    # Plan status and send limit calculation
     plan_status = {'plan_name': 'Grátis', 'badge_class': 'secondary', 'days_left': None}
     daily_limit = 25
     if user_data['role'] == 'admin':
@@ -511,10 +507,6 @@ def get_all_contacts_from_baserow(settings):
 # ===============================================================
 # == 5. ROTAS DA APLICAÇÃO ==
 # ===============================================================
-@app.route('/ping')
-def ping():
-    return "pong", 200
-
 @app.route('/')
 def home(): return redirect(url_for('login_page'))
 
@@ -946,7 +938,6 @@ def schedule_page():
                 if not all([subject, body, send_at_str, schedule_type]): flash("Todos os campos são obrigatórios para agendar.", "warning")
                 else:
                     send_at_dt = datetime.strptime(send_at_str, '%Y-%m-%dT%H:%M')
-                    # Tornar o datetime timezone-aware
                     aware_dt = BR_TZ.localize(send_at_dt)
                     conn.execute(text("""INSERT INTO scheduled_emails (user_id, schedule_type, status_target, manual_recipients, subject, body, send_at) VALUES (:uid, :st, :stat, :mr, :sub, :body, :sa)"""), {'uid': user_id, 'st': schedule_type, 'stat': status_target, 'mr': manual_recipients, 'sub': subject, 'body': body, 'sa': aware_dt})
                     flash("E-mail agendado com sucesso!", "success")
