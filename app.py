@@ -61,132 +61,144 @@ def teardown_request_db_connection(exception=None):
 # == 2. LÓGICA DO ROBÔ DE FUNDO (BACKGROUND WORKER) ==
 # ===============================================================
 
-def log_to_db_worker(conn, level, message):
-    """Função de log que usa a conexão DEDICADA do worker para evitar recursão."""
+def log_to_db_worker(level, message):
+    """Função de log que usa sua PRÓPRIA conexão para máxima robustez."""
+    log_conn = None
     try:
-        # Usa a conexão já existente, mas em modo autocommit para não interferir nas transações principais.
-        conn.execution_options(autocommit=True).execute(
+        log_conn = db_engine.connect()
+        log_conn.execute(
             text("INSERT INTO app_logs (level, message) VALUES (:level, :message)"),
             {'level': level, 'message': str(message)}
         )
+        log_conn.commit()
     except Exception as e:
         print(f"[WORKER LOG FALLBACK] Level: {level}, Msg: {message}, Err: {e}")
+    finally:
+        if log_conn:
+            log_conn.close()
 
 def send_emails_in_batches_worker(conn, user_settings, user_id, recipients, subject, body):
     """Função de envio de e-mails com LOGGING DETALHADO."""
     batch_size, delay_seconds, smtp_port = int(user_settings.get('batch_size') or 15), int(user_settings.get('delay_seconds') or 60), int(user_settings.get('smtp_port') or 587)
     sent_count, fail_count = 0, 0
-    log_to_db_worker(conn, 'INFO', f"User {user_id}: Iniciando função de envio para {len(recipients)} destinatários.")
+    log_to_db_worker('INFO', f"User {user_id}: Iniciando função de envio para {len(recipients)} destinatários.")
     for i in range(0, len(recipients), batch_size):
         batch = recipients[i:i + batch_size]
-        log_to_db_worker(conn, 'INFO', f"User {user_id}: Processando lote {i//batch_size + 1}/{ -(-len(recipients)//batch_size) } com {len(batch)} e-mails.")
+        log_to_db_worker('INFO', f"User {user_id}: Processando lote {i//batch_size + 1}/{ -(-len(recipients)//batch_size) } com {len(batch)} e-mails.")
         for recipient in batch:
             recipient_email = recipient.get("Email")
             if not recipient_email:
-                log_to_db_worker(conn, 'WARNING', f"User {user_id}: Destinatário sem e-mail encontrado no lote. Pulando.")
+                log_to_db_worker('WARNING', f"User {user_id}: Destinatário sem e-mail encontrado no lote. Pulando.")
                 continue
             try:
                 msg = EmailMessage()
                 msg['Subject'], msg['From'], msg['To'] = subject, user_settings.get('smtp_user'), recipient_email
                 msg.add_alternative(body, subtype='html')
                 
-                log_to_db_worker(conn, 'SMTP_DEBUG', f"User {user_id}: [1/5] Conectando ao servidor {user_settings.get('smtp_host')}:{smtp_port}...")
+                log_to_db_worker('SMTP_DEBUG', f"User {user_id}: [1/5] Conectando ao servidor {user_settings.get('smtp_host')}:{smtp_port}...")
                 with smtplib.SMTP(str(user_settings.get('smtp_host')), smtp_port, timeout=20) as server:
-                    log_to_db_worker(conn, 'SMTP_DEBUG', f"User {user_id}: [2/5] Conexão estabelecida. Iniciando TLS...")
+                    log_to_db_worker('SMTP_DEBUG', f"User {user_id}: [2/5] Conexão estabelecida. Iniciando TLS...")
                     server.starttls()
-                    log_to_db_worker(conn, 'SMTP_DEBUG', f"User {user_id}: [3/5] TLS iniciado. Fazendo login como {user_settings.get('smtp_user')}...")
+                    log_to_db_worker('SMTP_DEBUG', f"User {user_id}: [3/5] TLS iniciado. Fazendo login como {user_settings.get('smtp_user')}...")
                     server.login(user_settings.get('smtp_user'), user_settings.get('smtp_password'))
-                    log_to_db_worker(conn, 'SMTP_DEBUG', f"User {user_id}: [4/5] Login bem-sucedido. Enviando e-mail para {recipient_email}...")
+                    log_to_db_worker('SMTP_DEBUG', f"User {user_id}: [4/5] Login bem-sucedido. Enviando e-mail para {recipient_email}...")
                     server.send_message(msg)
-                    log_to_db_worker(conn, 'SUCCESS', f"User {user_id}: [5/5] E-mail enviado com SUCESSO para {recipient_email}.")
+                    log_to_db_worker('SUCCESS', f"User {user_id}: [5/5] E-mail enviado com SUCESSO para {recipient_email}.")
                 sent_count += 1
                 conn.execute(text("INSERT INTO envio_historico (user_id, recipient_email, subject, body) VALUES (:uid, :re, :s, :b)"), {'uid': user_id, 're': recipient_email, 's': subject, 'b': body})
             except Exception as e:
                 fail_count += 1
-                log_to_db_worker(conn, 'ERROR', f"User {user_id}: FALHA SMTP ao enviar para {recipient_email}: {type(e).__name__} - {e}")
+                log_to_db_worker('ERROR', f"User {user_id}: FALHA SMTP ao enviar para {recipient_email}: {type(e).__name__} - {e}")
         
         if i + batch_size < len(recipients):
-            log_to_db_worker(conn, 'INFO', f"User {user_id}: Fim do lote. Aguardando {delay_seconds} segundos...")
+            log_to_db_worker('INFO', f"User {user_id}: Fim do lote. Aguardando {delay_seconds} segundos...")
             gevent.sleep(delay_seconds)
             
-    log_to_db_worker(conn, 'INFO', f"User {user_id}: Função de envio finalizada. Total: {sent_count} enviados, {fail_count} falhas.")
+    log_to_db_worker('INFO', f"User {user_id}: Função de envio finalizada. Total: {sent_count} enviados, {fail_count} falhas.")
     return sent_count, fail_count
 
 def process_user_tasks(conn, user):
-    """Processa TODAS as tarefas para UM usuário."""
+    """Processa TODAS as tarefas para UM usuário DENTRO DE UMA TRANSAÇÃO EXTERNA."""
     user_settings = dict(user)
     user_id = user_settings['id']
-    log_to_db_worker(conn, 'INFO', f"Verificando tarefas para {user_settings['email']} (ID: {user_id}).")
+    log_to_db_worker('INFO', f"Processando tarefas para o usuário: {user_settings['email']} (ID: {user_id}).")
 
-    with conn.begin(): 
-        job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchone()
-        if not job:
-            log_to_db_worker(conn, 'DEBUG', f"User {user_id}: Nenhum job de envio em massa pendente encontrado.")
-        if job:
-            job_id = job['id']
-            log_to_db_worker(conn, 'WORKER', f"User {user_id}: Job {job_id} encontrado. Processando...")
-            try:
-                conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = NOW() WHERE id = :job_id"), {'job_id': job_id})
-                recipients = json.loads(job['recipients_json'])
-                sent, failed = send_emails_in_batches_worker(conn, user_settings, user_id, recipients, job['subject'], job['body'])
-                if user_settings['role'] != 'admin':
-                    current_user_state = conn.execute(text("SELECT sends_today, last_send_date FROM users WHERE id = :id FOR UPDATE"), {'id': user_id}).mappings().fetchone()
-                    sends_today = current_user_state['sends_today'] if current_user_state and current_user_state['last_send_date'] == datetime.now().date() else 0
-                    conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': datetime.now().date(), 'uid': user_id})
-                conn.execute(text("UPDATE mass_send_jobs SET status = 'completed', sent_count = :sc, error_message = NULL WHERE id = :job_id"), {'sc': sent, 'job_id': job_id})
-                log_to_db_worker(conn, 'WORKER', f"User {user_id}: Job {job_id} concluído com sucesso.")
-            except Exception as e:
-                error_msg = str(e)
-                log_to_db_worker(conn, 'ERROR', f"ERRO CRÍTICO no Job ID {job_id}: {error_msg}")
-                conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
-    
+    # --- TAREFA 1: Processar Envios em Massa (mass_send_jobs) ---
+    job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchone()
+    if not job:
+        log_to_db_worker('DEBUG', f"User {user_id}: Nenhum job de envio em massa pendente encontrado.")
+    if job:
+        job_id = job['id']
+        log_to_db_worker('WORKER', f"User {user_id}: Job {job_id} encontrado. Processando...")
+        try:
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'processing', processed_at = NOW() WHERE id = :job_id"), {'job_id': job_id})
+            recipients = json.loads(job['recipients_json'])
+            sent, failed = send_emails_in_batches_worker(conn, user_settings, user_id, recipients, job['subject'], job['body'])
+            if user_settings['role'] != 'admin':
+                current_user_state = conn.execute(text("SELECT sends_today, last_send_date FROM users WHERE id = :id FOR UPDATE"), {'id': user_id}).mappings().fetchone()
+                sends_today = current_user_state['sends_today'] if current_user_state and current_user_state['last_send_date'] == datetime.now().date() else 0
+                conn.execute(text("UPDATE users SET sends_today = :st, last_send_date = :lsd WHERE id = :uid"), {'st': sends_today + sent, 'lsd': datetime.now().date(), 'uid': user_id})
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'completed', sent_count = :sc, error_message = NULL WHERE id = :job_id"), {'sc': sent, 'job_id': job_id})
+            log_to_db_worker('WORKER', f"User {user_id}: Job {job_id} concluído com sucesso.")
+        except Exception as e:
+            error_msg = str(e)
+            log_to_db_worker('ERROR', f"ERRO CRÍTICO no Job ID {job_id}: {error_msg}")
+            conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
+            raise # Propaga o erro para dar rollback na transação principal
+
+    # --- TAREFA 2 & 3: Agendamentos e Automações ---
     if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
-        log_to_db_worker(conn, 'DEBUG', f"User {user_id}: Configurações incompletas para Agendamentos/Automações. Pulando.")
+        log_to_db_worker('DEBUG', f"User {user_id}: Configurações incompletas para Agendamentos/Automações. Pulando.")
         return
         
     all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
     
-    with conn.begin():
-        pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= NOW() FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchall()
-        if pending_emails:
-            log_to_db_worker(conn, 'INFO', f"User {user_id}: {len(pending_emails)} agendamento(s) encontrado(s).")
-            for email_job in pending_emails:
-                recipients = []
-                if email_job['schedule_type'] == 'group':
-                    target = email_job['status_target']
-                    if target == 'all': recipients = all_contacts
-                    else: recipients = [c for c in all_contacts if c.get('status_badge_class') == target]
-                elif email_job['schedule_type'] == 'manual' and email_job['manual_recipients']:
-                    recipients = [{'Email': email.strip()} for email in email_job['manual_recipients'].split(',')]
-                if recipients:
-                    log_to_db_worker(conn, 'WORKER', f"Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
-                    send_emails_in_batches_worker(conn, user_settings, user_id, recipients, email_job['subject'], email_job['body'])
-                conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
+    pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= NOW() FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchall()
+    if pending_emails:
+        log_to_db_worker('INFO', f"User {user_id}: {len(pending_emails)} agendamento(s) encontrado(s).")
+        for email_job in pending_emails:
+            recipients = []
+            if email_job['schedule_type'] == 'group':
+                target = email_job['status_target']
+                if target == 'all': recipients = all_contacts
+                else: recipients = [c for c in all_contacts if c.get('status_badge_class') == target]
+            elif email_job['schedule_type'] == 'manual' and email_job['manual_recipients']:
+                recipients = [{'Email': email.strip()} for email in email_job['manual_recipients'].split(',')]
+            if recipients:
+                log_to_db_worker('WORKER', f"Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
+                send_emails_in_batches_worker(conn, user_settings, user_id, recipients, email_job['subject'], email_job['body'])
+            conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
 
 def background_worker_loop():
     """O loop principal do robô."""
-    print("--- 🤖 Robô de Fundo (Greenlet) Iniciado ---")
+    log_to_db_worker('INFO', "--- 🤖 Robô de Fundo (Greenlet) Iniciado ---")
     while True:
         gevent.sleep(60)
         conn = None
         try:
+            log_to_db_worker('INFO', "Ciclo de verificação do robô iniciado.")
             conn = db_engine.connect()
-            log_to_db_worker(conn, 'INFO', "Ciclo de verificação do robô iniciado.")
+            log_to_db_worker('INFO', 'Conexão com DB estabelecida pelo robô.')
+
             active_users = conn.execute(text("SELECT * FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).mappings().fetchall()
             if not active_users:
-                log_to_db_worker(conn, 'DEBUG', "Nenhum usuário ativo para processar.")
+                log_to_db_worker('DEBUG', "Nenhum usuário ativo para processar.")
             else:
-                log_to_db_worker(conn, 'INFO', f"Encontrados {len(active_users)} usuários ativos.")
+                log_to_db_worker('INFO', f"Encontrados {len(active_users)} usuários ativos.")
             
             for user in active_users:
                 try:
-                    process_user_tasks(conn, user)
+                    with conn.begin(): 
+                        process_user_tasks(conn, user)
                 except Exception as user_error:
-                    print(f"Erro ao processar tarefas para o usuário {user['email']}: {user_error}")
+                    log_to_db_worker('ERROR', f"ERRO na transação para o usuário {user['email']}. O trabalho foi revertido. Erro: {user_error}")
+        
         except Exception as loop_error:
-            print(f"--- ERRO CRÍTICO NO LOOP DO ROBÔ: {loop_error} ---")
+            log_to_db_worker('CRITICAL', f"--- ERRO CRÍTICO NO LOOP DO ROBÔ: {loop_error} ---")
         finally:
-            if conn and not conn.closed: conn.close()
+            if conn:
+                conn.close()
+                log_to_db_worker('INFO', 'Conexão do robô com DB fechada no final do ciclo.')
 
 # ===============================================================
 # == 3. INICIALIZAÇÃO SEGURA DO ROBÔ (UMA ÚNICA VEZ) ==
@@ -240,7 +252,6 @@ def init_db_logic():
             conn.execute(text("CREATE TABLE app_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, level TEXT, message TEXT);"))
             print("Tabelas criadas com sucesso.")
             
-            # --- Dados Iniciais ---
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Envio em Massa e por Status', 'mass-send', 'Permite o envio de e-mails em massa e por status de cliente.');"))
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Agendamentos de Campanhas', 'schedules', 'Permite agendar envios de e-mail para o futuro.');"))
             conn.execute(text("INSERT INTO features (name, slug, description) VALUES ('Automações Inteligentes', 'automations', 'Configura e-mails automáticos de boas-vindas e lembretes de expiração.');"))
@@ -589,11 +600,8 @@ def mass_send_page():
                 
                 subject, body = request.form.get('subject'), request.form.get('body')
                 
-                # Log da criação do Job
-                log_conn = db_engine.connect().execution_options(autocommit=True)
-                log_to_db_worker(log_conn, 'INFO', f"User {user_id}: Criando job de envio em massa para {len(recipients)} destinatários.")
-                log_conn.close()
-
+                log_to_db_worker('INFO', f"User {user_id}: Criando job de envio em massa para {len(recipients)} destinatários.")
+                
                 conn.execute(
                     text("INSERT INTO mass_send_jobs (user_id, subject, body, recipients_json, recipients_count) VALUES (:uid, :sub, :body, :rec_json, :rec_count)"),
                     {'uid': user_id, 'sub': subject, 'body': body, 'rec_json': json.dumps(recipients), 'rec_count': len(recipients)}
