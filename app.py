@@ -62,7 +62,9 @@ def teardown_request_db_connection(exception=None):
 # ===============================================================
 # == 2. LÓGICA DO ROBÔ DE FUNDO (BACKGROUND WORKER) ==
 # ===============================================================
+
 def log_to_db_worker(level, message):
+    """Função de log que usa sua PRÓPRIA conexão para máxima robustez."""
     log_conn = None
     try:
         log_conn = db_engine.connect()
@@ -76,8 +78,9 @@ def log_to_db_worker(level, message):
     finally:
         if log_conn:
             log_conn.close()
-            
+
 def send_emails_in_batches_worker(conn, user_settings, user_id, recipients, subject, body):
+    """Função de envio de e-mails com LOGGING DETALHADO."""
     batch_size, delay_seconds, smtp_port = int(user_settings.get('batch_size') or 15), int(user_settings.get('delay_seconds') or 60), int(user_settings.get('smtp_port') or 587)
     sent_count, fail_count = 0, 0
     log_to_db_worker('INFO', f"User {user_id}: Iniciando função de envio para {len(recipients)} destinatários.")
@@ -117,10 +120,12 @@ def send_emails_in_batches_worker(conn, user_settings, user_id, recipients, subj
     return sent_count, fail_count
 
 def process_user_tasks(conn, user):
+    """Processa TODAS as tarefas para UM usuário DENTRO DE UMA TRANSAÇÃO EXTERNA."""
     user_settings = dict(user)
     user_id = user_settings['id']
     log_to_db_worker('INFO', f"Processando tarefas para o usuário: {user_settings['email']} (ID: {user_id}).")
 
+    # --- TAREFA 1: Processar Envios em Massa (mass_send_jobs) ---
     job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchone()
     if job:
         job_id = job['id']
@@ -141,12 +146,14 @@ def process_user_tasks(conn, user):
             conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
             raise 
 
+    # --- TAREFA 2: Agendamentos e Automações ---
     if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
         log_to_db_worker('DEBUG', f"User {user_id}: Configurações incompletas para Agendamentos/Automações. Pulando.")
         return
         
     all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
     
+    # Lógica de Agendamentos
     pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= NOW() FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchall()
     if pending_emails:
         log_to_db_worker('INFO', f"User {user_id}: {len(pending_emails)} agendamento(s) encontrado(s).")
@@ -163,11 +170,13 @@ def process_user_tasks(conn, user):
                 send_emails_in_batches_worker(conn, user_settings, user_id, recipients, email_job['subject'], email_job['body'])
             conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
 
+    # Lógica de Automações
     automations = json.loads(user_settings.get('automations_config') or '{}')
     if not automations:
         log_to_db_worker('DEBUG', f"User {user_id}: Nenhuma configuração de automação encontrada.")
         return
 
+    # Automação de Boas-Vindas
     welcome_config = automations.get('welcome', {})
     if welcome_config.get('enabled'):
         log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de boas-vindas.")
@@ -206,6 +215,7 @@ def process_user_tasks(conn, user):
                     else:
                         log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: E-mail de boas-vindas já enviado para {contact.get('Email')}. Pulando.")
     
+    # Automação de Expiração
     expiry_config = automations.get('expiry', {})
     if expiry_config.get('enabled'):
         log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de expiração.")
@@ -416,6 +426,7 @@ def inject_user_info():
         session.clear()
         return {}
     
+    # Feature calculation
     enabled_features = set()
     if user_data['role'] == 'admin':
         enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
@@ -423,6 +434,7 @@ def inject_user_info():
         enabled_features = {row['slug'] for row in conn.execute(text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"), {'plan_id': user_data['plan_id']}).mappings().fetchall()}
     session['user_features'] = list(enabled_features)
 
+    # Plan status and send limit calculation
     plan_status = {'plan_name': 'Grátis', 'badge_class': 'secondary', 'days_left': None}
     daily_limit = 25
     if user_data['role'] == 'admin':
