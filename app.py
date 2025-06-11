@@ -347,19 +347,6 @@ def init_db_logic():
 @app.cli.command('init-db')
 def init_db_command(): init_db_logic()
 
-# ROTA SECRETA PARA INICIALIZAR O BANCO DE DADOS EM PRODUÇÃO
-@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
-def secret_init_db():
-    try:
-        init_db_logic()
-        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA OU ALTERE ESTA ROTA AGORA POR MOTIVOS DE SEGURANÇA."
-        flash(message, "success")
-        return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
-    except Exception as e:
-        message = f"Erro ao reinicializar o banco de dados: {e}"
-        flash(message, "danger")
-        return f"<h1>Erro</h1><p>{message}</p>", 500
-
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -1054,5 +1041,16 @@ def automations_page():
 def view_logs():
     logs = g.db_conn.execute(text("SELECT * FROM app_logs ORDER BY timestamp DESC LIMIT 200")).mappings().fetchall()
     return render_template('logs.html', logs=logs)
+
+@app.route('/admin/reinit-db', methods=['POST'])
+@login_required
+@admin_required
+def reinit_db():
+    try:
+        init_db_logic()
+        flash("Base de dados reinicializada com sucesso!", "success")
+    except Exception as e:
+        flash(f"Erro ao reinicializar a base de dados: {e}", "danger")
+    return redirect(url_for('settings_page'))
 
 # O Gunicorn assume o controle a partir daqui.
