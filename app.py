@@ -243,7 +243,7 @@ def background_worker_loop():
         conn = None
         try:
             conn = db_engine.connect()
-            result = conn.execute(text("SELECT id FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE)")).fetchall()
+            result = conn.execute(text("SELECT id FROM users WHERE role = 'admin' OR (plan_id IS NOT NULL AND plan_expiration_date >= CURRENT_DATE) OR (plan_id IS NULL)")).fetchall()
             user_ids = [row[0] for row in result]
         except Exception as e:
             log_to_db_worker('CRITICAL', f"Erro ao buscar usuários ativos: {e}")
@@ -430,8 +430,13 @@ def inject_user_info():
     enabled_features = set()
     if user_data['role'] == 'admin':
         enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
-    elif user_data.get('plan_id') and (not user_data.get('plan_expiration_date') or user_data['plan_expiration_date'] >= datetime.now().date()):
-        enabled_features = {row['slug'] for row in conn.execute(text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"), {'plan_id': user_data['plan_id']}).mappings().fetchall()}
+    else:
+        # CORREÇÃO: Concede acesso base para utilizadores FREE e com plano
+        enabled_features.add('mass-send')
+        if user_data.get('plan_id') and (not user_data.get('plan_expiration_date') or user_data['plan_expiration_date'] >= datetime.now().date()):
+            plan_features = {row['slug'] for row in conn.execute(text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"), {'plan_id': user_data['plan_id']}).mappings().fetchall()}
+            enabled_features.update(plan_features) # Adiciona funcionalidades do plano pago
+
     session['user_features'] = list(enabled_features)
 
     # Plan status and send limit calculation

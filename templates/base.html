@@ -28,15 +28,29 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <div class="navbar-nav ms-auto d-flex align-items-center">
                     {% if session.logged_in %}
-                        <!-- Contador de Limite de Envios -->
-                        {% if daily_limit is defined %}
-                            <div class="nav-item me-3">
+                        
+                        {% if user_plan_status %}
+                            <div class="nav-item me-lg-3 mb-2 mb-lg-0">
                                 <span class="badge text-bg-light border border-secondary-subtle p-2">
-                                    {% if daily_limit == -1 %}
-                                        <i class="bi bi-infinity"></i> Envios Ilimitados
-                                    {% else %}
-                                        <i class="bi bi-envelope-check"></i> {{ sends_remaining }} / {{ daily_limit }} envios hoje
+                                    <i class="bi bi-award"></i>
+                                    Plano: <strong>{{ user_plan_status.plan_name }}</strong>
+                                    {% if user_plan_status.days_left is not none and user_plan_status.days_left < 9000 %}
+                                    <span class="vr mx-2"></span>
+                                    Expira em: <strong>{{ user_plan_status.days_left }} dias</strong>
                                     {% endif %}
+                                </span>
+                            </div>
+                            <div class="nav-item me-lg-3 mb-2 mb-lg-0">
+                                <span class="badge text-bg-light border border-secondary-subtle p-2">
+                                    <i class="bi bi-envelope-check"></i>
+                                    Envios Hoje: 
+                                    <strong>{{ sends_today }} / 
+                                        {% if daily_limit == -1 %}
+                                            Ilimitado
+                                        {% else %}
+                                            {{ daily_limit }}
+                                        {% endif %}
+                                    </strong>
                                 </span>
                             </div>
                         {% endif %}
@@ -53,7 +67,6 @@
                                     <li><a class="dropdown-item" href="{{ url_for('users_page') }}">Gerenciar Usuários</a></li>
                                     <li><a class="dropdown-item" href="{{ url_for('manage_plans_page') }}">Gerenciar Planos</a></li>
                                     <li><hr class="dropdown-divider"></li>
-                                    <!-- LINK ADICIONADO AQUI -->
                                     <li><a class="dropdown-item" href="{{ url_for('view_logs') }}">Logs do Sistema</a></li>
                                 </ul>
                             </div>
@@ -85,7 +98,9 @@
 
     <!-- Seletor de Tema (Opcional) -->
     <div class="theme-switcher">
-        <button class="btn btn-secondary" id="theme-toggle-btn">🌙</button>
+        <button class="btn btn-secondary" id="theme-toggle-btn">
+            <i class="bi bi-moon-stars-fill"></i>
+        </button>
     </div>
     
     <!-- Tela de Carregamento (Opcional) -->
@@ -99,7 +114,65 @@
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // ... seu script de theme switcher aqui ...
+        (() => {
+            'use strict'
+
+            const getStoredTheme = () => localStorage.getItem('theme')
+            const setStoredTheme = theme => localStorage.setItem('theme', theme)
+
+            const getPreferredTheme = () => {
+                const storedTheme = getStoredTheme()
+                if (storedTheme) {
+                    return storedTheme
+                }
+                return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+            }
+
+            const setTheme = theme => {
+                if (theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                    document.documentElement.setAttribute('data-bs-theme', 'dark')
+                } else {
+                    document.documentElement.setAttribute('data-bs-theme', theme)
+                }
+            }
+
+            setTheme(getPreferredTheme())
+
+            const showActiveTheme = (theme, focus = false) => {
+                const themeSwitcher = document.querySelector('#theme-toggle-btn')
+
+                if (!themeSwitcher) {
+                    return
+                }
+                
+                const themeSwitcherIcon = themeSwitcher.querySelector('i')
+                if (theme === 'dark') {
+                    themeSwitcherIcon.classList.remove('bi-moon-stars-fill');
+                    themeSwitcherIcon.classList.add('bi-sun-fill');
+                } else {
+                    themeSwitcherIcon.classList.remove('bi-sun-fill');
+                    themeSwitcherIcon.classList.add('bi-moon-stars-fill');
+                }
+            }
+
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+                const storedTheme = getStoredTheme()
+                if (storedTheme !== 'light' && storedTheme !== 'dark') {
+                    setTheme(getPreferredTheme())
+                }
+            })
+
+            window.addEventListener('DOMContentLoaded', () => {
+                showActiveTheme(getPreferredTheme())
+
+                document.querySelector('#theme-toggle-btn').addEventListener('click', () => {
+                    const theme = getStoredTheme() === 'light' ? 'dark' : 'light'
+                    setStoredTheme(theme)
+                    setTheme(theme)
+                    showActiveTheme(theme, true)
+                })
+            })
+        })()
     </script>
     {% block tail_scripts %}{% endblock %}
 </body>
