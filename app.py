@@ -144,13 +144,14 @@ def process_user_tasks(conn, user):
             conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
             raise 
 
-    # --- TAREFA 2 & 3: Agendamentos e Automações ---
+    # --- TAREFA 2: Agendamentos e Automações ---
     if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
         log_to_db_worker('DEBUG', f"User {user_id}: Configurações incompletas para Agendamentos/Automações. Pulando.")
         return
         
     all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
     
+    # Lógica de Agendamentos
     pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= NOW() FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchall()
     if pending_emails:
         log_to_db_worker('INFO', f"User {user_id}: {len(pending_emails)} agendamento(s) encontrado(s).")
@@ -166,6 +167,45 @@ def process_user_tasks(conn, user):
                 log_to_db_worker('WORKER', f"Processando agendamento ID {email_job['id']} para {len(recipients)} destinatário(s)...")
                 send_emails_in_batches_worker(conn, user_settings, user_id, recipients, email_job['subject'], email_job['body'])
             conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
+
+    # Lógica de Automações
+    automations = json.loads(user_settings.get('automations_config') or '{}')
+    if not automations:
+        log_to_db_worker('DEBUG', f"User {user_id}: Nenhuma configuração de automação encontrada.")
+        return
+
+    # Automação de Boas-Vindas
+    welcome_config = automations.get('welcome', {})
+    if welcome_config.get('enabled'):
+        log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de boas-vindas.")
+        subject, body = welcome_config.get('subject'), welcome_config.get('body')
+        if subject and body:
+            new_contacts = [c for c in all_contacts if c.get("Data") and parse_date_string(c["Data"]) and (datetime.now() - parse_date_string(c["Data"])).days < 1]
+            if new_contacts: log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(new_contacts)} novos contactos para boas-vindas.")
+            for contact in new_contacts:
+                already_sent = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
+                if not already_sent:
+                    log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando e-mail de boas-vindas para {contact.get('Email')}.")
+                    send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
+                else:
+                    log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: E-mail de boas-vindas já enviado para {contact.get('Email')}. Pulando.")
+    
+    # Automação de Expiração
+    expiry_config = automations.get('expiry', {})
+    if expiry_config.get('enabled'):
+        log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de expiração.")
+        for days_left in [7, 3, 1]:
+            subject, body = expiry_config.get(f'subject_{days_left}_days'), expiry_config.get(f'body_{days_left}_days')
+            if subject and body:
+                expiring_contacts = [c for c in all_contacts if c.get('remaining_days_int') == days_left]
+                if expiring_contacts: log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(expiring_contacts)} contactos expirando em {days_left} dias.")
+                for contact in expiring_contacts:
+                    already_sent_today = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub AND DATE(sent_at) = CURRENT_DATE"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
+                    if not already_sent_today:
+                        log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando aviso de expiração de {days_left} dias para {contact.get('Email')}.")
+                        send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
+                    else:
+                        log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Aviso de expiração de {days_left} dias já enviado hoje para {contact.get('Email')}. Pulando.")
 
 def background_worker_loop():
     """O loop principal do robô, agora com gestão de transação corrigida."""
