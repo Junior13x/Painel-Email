@@ -556,7 +556,7 @@ def get_all_contacts_from_baserow(settings):
 @app.route('/ping')
 def ping():
     return "pong", 200
-    
+
 @app.route('/')
 def home(): return redirect(url_for('login_page'))
 
@@ -968,18 +968,74 @@ def save_history_as_template():
 @feature_required('mass-send')
 def templates_page():
     conn, user_id = g.db_conn, session['user_id']
-    if request.method == 'POST':
+    if request.method == 'POST': # Lógica para CRIAR um novo modelo
         name, subject, body = request.form.get('template_name'), request.form.get('subject'), request.form.get('body')
         if name and subject and body:
             try:
-                with conn.begin(): conn.execute(text("INSERT INTO email_templates (user_id, name, subject, body) VALUES (:uid, :n, :s, :b)"), {'uid': user_id, 'n': name, 's': subject, 'b': body})
-                flash("Template salvo!", "success")
-            except sqlalchemy_exc.IntegrityError: flash("Um template com esse nome já existe.", "danger")
-        else: flash("Todos os campos são obrigatórios.", "warning")
+                with conn.begin(): 
+                    conn.execute(text("INSERT INTO email_templates (user_id, name, subject, body) VALUES (:uid, :n, :s, :b)"), {'uid': user_id, 'n': name, 's': subject, 'b': body})
+                flash("Modelo criado com sucesso!", "success")
+            except sqlalchemy_exc.IntegrityError: 
+                flash("Um modelo com esse nome já existe.", "danger")
+        else: 
+            flash("Todos os campos são obrigatórios.", "warning")
         return redirect(url_for('templates_page'))
+    
+    # Lógica para GET
     templates = conn.execute(text("SELECT * FROM email_templates WHERE user_id = :uid ORDER BY name"), {'uid': user_id}).mappings().fetchall()
-    return render_template('templates.html', templates=templates)
+    return render_template('templates.html', templates=templates, template_data=None)
 
+@app.route('/templates/edit/<int:template_id>', methods=['GET', 'POST'])
+@login_required
+@feature_required('mass-send')
+def edit_template(template_id):
+    conn, user_id = g.db_conn, session['user_id']
+
+    if request.method == 'POST': # Lógica para ATUALIZAR um modelo existente
+        name, subject, body = request.form.get('template_name'), request.form.get('subject'), request.form.get('body')
+        if name and subject and body:
+            try:
+                with conn.begin():
+                    # Verifica se o nome já existe noutro modelo
+                    existing = conn.execute(text("SELECT id FROM email_templates WHERE user_id = :uid AND name = :n AND id != :tid"), {'uid': user_id, 'n': name, 'tid': template_id}).mappings().fetchone()
+                    if existing:
+                        flash("Já existe outro template com esse nome.", "danger")
+                    else:
+                        conn.execute(
+                            text("UPDATE email_templates SET name = :n, subject = :s, body = :b WHERE id = :tid AND user_id = :uid"),
+                            {'n': name, 's': subject, 'b': body, 'tid': template_id, 'uid': user_id}
+                        )
+                        flash("Modelo atualizado com sucesso!", "success")
+                        return redirect(url_for('templates_page'))
+            except Exception as e:
+                flash(f"Erro ao atualizar o template: {e}", "danger")
+        else:
+            flash("Todos os campos são obrigatórios.", "warning")
+        return redirect(url_for('edit_template', template_id=template_id))
+    
+    # Lógica para GET (mostrar o formulário de edição)
+    template_data = conn.execute(text("SELECT * FROM email_templates WHERE id = :tid AND user_id = :uid"), {'tid': template_id, 'uid': user_id}).mappings().fetchone()
+    if not template_data:
+        flash("Modelo não encontrado ou sem permissão de acesso.", "danger")
+        return redirect(url_for('templates_page'))
+
+    templates = conn.execute(text("SELECT * FROM email_templates WHERE user_id = :uid ORDER BY name"), {'uid': user_id}).mappings().fetchall()
+    return render_template('templates.html', templates=templates, template_data=template_data)
+
+
+@app.route('/templates/delete/<int:template_id>', methods=['POST'])
+@login_required
+@feature_required('mass-send')
+def delete_template(template_id):
+    conn, user_id = g.db_conn, session['user_id']
+    with conn.begin():
+        result = conn.execute(text("DELETE FROM email_templates WHERE id = :tid AND user_id = :uid"), {'tid': template_id, 'uid': user_id})
+    if result.rowcount > 0:
+        flash("Modelo excluído com sucesso.", "info")
+    else:
+        flash("Modelo não encontrado ou sem permissão para excluir.", "danger")
+    return redirect(url_for('templates_page'))
+    
 @app.route('/agendamento', methods=['GET', 'POST'])
 @login_required
 @feature_required('schedules')

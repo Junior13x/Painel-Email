@@ -1,102 +1,86 @@
-<!-- Diz ao sistema para usar o 'base.html' como esqueleto -->
 {% extends "base.html" %}
 
-<!-- Define o título específico para esta página -->
-{% block title %}Painel Principal{% endblock %}
+{% block title %}{% if template_data %}Editar Modelo{% else %}Modelos de E-mail{% endif %}{% endblock %}
 
-<!-- Coloca todo o conteúdo desta página dentro do bloco 'content' do base.html -->
+{% block head_scripts %}
+    <script src="https://cdn.tiny.cloud/1/no-api-key/tinymce/7/tinymce.min.js" referrerpolicy="origin"></script>
+{% endblock %}
+
 {% block content %}
-<!doctype html>
-<html lang="pt-br">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% if template_data %}Editar Modelo{% else %}Modelos de E-mail{% endif %}</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<div class="container mt-4 mb-5">
+    <div class="d-flex justify-content-between align-items-center">
+        <h1>{% if template_data %}Editar Modelo{% else %}Gerenciar Modelos de E-mail{% endif %}</h1>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
+    </div>
+    <p>Crie, edite e organize seus modelos de e-mail para usar em suas campanhas.</p>
     
-    <!-- Lembre-se de colocar sua chave de API do TinyMCE aqui -->
-    <script src="https://cdn.tiny.cloud/1/w2y1qgbsot0rzi900osw5ffpc0rseh89dt7a6s7ta66u3v54/tinymce/7/tinymce.min.js" referrerpolicy="origin"></script>
-</head>
-<body>
-    <div class="container mt-4 mb-5">
-        <div class="d-flex justify-content-between align-items-center">
-            <h1>{% if template_data %}Editar Modelo{% else %}Gerenciar Modelos de E-mail{% endif %}</h1>
-            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Voltar ao Painel</a>
-        </div>
-        <p>Crie, edite e organize seus modelos de e-mail para usar em suas campanhas.</p>
-        
-        {% with messages = get_flashed_messages(with_categories=true) %}
-          {% if messages %}
-            {% for category, message in messages %}
-              <div class="alert alert-{{ category }} mt-3">{{ message }}</div>
-            {% endfor %}
-          {% endif %}
-        {% endwith %}
-
-        <hr>
-        
-        <div class="row g-5">
-            <!-- Coluna do Formulário -->
-            <div class="col-md-7">
-                <h4>{% if template_data %}Editando "{{ template_data.name }}"{% else %}Criar Novo Modelo{% endif %}</h4>
-                <form method="POST" action="{{ url_for('edit_template', template_id=template_data.id) if template_data else url_for('templates_page') }}" id="template-form">
-                    <div class="mb-3">
-                        <label for="template_name" class="form-label">Nome do Modelo</label>
-                        <input type="text" class="form-control" id="template_name" name="template_name" value="{{ template_data.name if template_data else '' }}" required>
-                        <div class="form-text">Um nome interno para você identificar este modelo. Não aparecerá no e-mail.</div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="subject" class="form-label">Assunto do E-mail</label>
-                        <input type="text" class="form-control" id="subject" name="subject" value="{{ template_data.subject if template_data else '' }}" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="body" class="form-label">Corpo do E-mail</label>
-                        <textarea class="form-control" id="body" name="body" rows="12">{{ template_data.body if template_data else '' }}</textarea>
-                    </div>
-                    <button type="submit" class="btn btn-primary">{% if template_data %}Salvar Alterações{% else %}Criar Modelo{% endif %}</button>
-                    {% if template_data %}
-                        <a href="{{ url_for('templates_page') }}" class="btn btn-secondary">Cancelar Edição</a>
-                    {% endif %}
-                </form>
-            </div>
-            
-            <!-- Coluna da Lista de Modelos -->
-            <div class="col-md-5">
-                <h4>Modelos Salvos</h4>
-                <div class="list-group">
-                    {% for tpl in templates %}
-                        <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
-                            <div>
-                                <h6 class="mb-1">{{ tpl.name }}</h6>
-                                <small class="text-muted">{{ tpl.subject }}</small>
-                            </div>
-                            <div>
-                                <a href="{{ url_for('edit_template', template_id=tpl.id) }}" class="btn btn-sm btn-outline-primary">Editar</a>
-                                <form method="POST" action="{{ url_for('delete_template', template_id=tpl.id) }}" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o modelo \'{{ tpl.name }}\'?');">
-                                    <button type="submit" class="btn btn-sm btn-outline-danger">Excluir</button>
-                                </form>
-                            </div>
+    <hr>
+    
+    <div class="row g-5">
+        <div class="col-md-7">
+            <h4>{% if template_data %}Editando "{{ template_data.name }}"{% else %}Criar Novo Modelo{% endif %}</h4>
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('edit_template', template_id=template_data.id) if template_data else url_for('templates_page') }}" id="template-form">
+                        <div class="mb-3">
+                            <label for="template_name" class="form-label">Nome do Modelo</label>
+                            <input type="text" class="form-control" id="template_name" name="template_name" value="{{ template_data.name if template_data else '' }}" required>
+                            <div class="form-text">Um nome interno para você identificar este modelo. Não aparecerá no e-mail.</div>
                         </div>
-                    {% else %}
-                        <div class="list-group-item text-center text-muted">Nenhum modelo criado ainda.</div>
-                    {% endfor %}
+                        <div class="mb-3">
+                            <label for="subject" class="form-label">Assunto do E-mail</label>
+                            <input type="text" class="form-control" id="subject" name="subject" value="{{ template_data.subject if template_data else '' }}" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="body" class="form-label">Corpo do E-mail</label>
+                            <textarea class="form-control" id="body" name="body" rows="12">{{ template_data.body if template_data else '' }}</textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary">{% if template_data %}Salvar Alterações{% else %}Criar Modelo{% endif %}</button>
+                        {% if template_data %}
+                            <a href="{{ url_for('templates_page') }}" class="btn btn-secondary">Cancelar Edição</a>
+                        {% endif %}
+                    </form>
                 </div>
             </div>
         </div>
+        
+        <div class="col-md-5">
+            <h4>Modelos Salvos</h4>
+            <div class="list-group">
+                {% for tpl in templates %}
+                    <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="mb-1">{{ tpl.name }}</h6>
+                            <small class="text-muted">{{ tpl.subject }}</small>
+                        </div>
+                        <div>
+                            <a href="{{ url_for('edit_template', template_id=tpl.id) }}" class="btn btn-sm btn-outline-primary">Editar</a>
+                            <form method="POST" action="{{ url_for('delete_template', template_id=tpl.id) }}" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o modelo \'{{ tpl.name }}\'?');">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">Excluir</button>
+                            </form>
+                        </div>
+                    </div>
+                {% else %}
+                    <div class="list-group-item text-center text-muted">Nenhum modelo criado ainda.</div>
+                {% endfor %}
+            </div>
+        </div>
     </div>
+</div>
+{% endblock %}
 
-    <!-- Scripts JS -->
-    <script>
-        tinymce.init({
-          selector: 'textarea#body',
-          plugins: 'lists link image table code help wordcount',
-          toolbar: 'undo redo | blocks | bold italic | alignleft aligncenter alignright | indent outdent | bullist numlist | code | help'
-        });
+{% block tail_scripts %}
+<script>
+    tinymce.init({
+        selector: 'textarea#body',
+        plugins: 'lists link image table code help wordcount',
+        toolbar: 'undo redo | blocks | bold italic | alignleft aligncenter alignright | indent outdent | bullist numlist | code | help',
+        skin: (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'oxide-dark' : 'default',
+        content_css: (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'default',
+    });
 
-        document.getElementById('template-form').addEventListener('submit', function() {
-            tinymce.triggerSave();
-        });
-    </script>
-</body>
-</html>
+    document.getElementById('template-form').addEventListener('submit', function() {
+        tinymce.triggerSave();
+    });
+</script>
 {% endblock %}
