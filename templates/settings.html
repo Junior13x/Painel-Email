@@ -81,9 +81,51 @@
             </div>
         </div>
 
-        <div class="d-grid">
+        <div class="d-grid mb-5">
             <button type="submit" class="btn btn-primary btn-lg">Salvar Todas as Configurações</button>
         </div>
     </form>
+
+    <!-- ZONA DE PERIGO - APENAS PARA ADMIN -->
+    {% if is_admin %}
+    <div class="card border-danger mt-5">
+        <div class="card-header bg-danger-subtle text-danger-emphasis">
+            <i class="bi bi-exclamation-triangle-fill"></i>
+            Zona de Perigo
+        </div>
+        <div class="card-body">
+            <h5 class="card-title text-danger">Reinicializar a Base de Dados</h5>
+            <p class="card-text">
+                Esta ação irá apagar **TODOS** os dados (utilizadores, planos, históricos, logs, etc.) e recriar as tabelas com a estrutura mais recente. 
+                Use isto apenas se precisar de aplicar uma atualização estrutural ou se quiser começar do zero. <strong>Esta ação é irreversível.</strong>
+            </p>
+            <button type="button" class="btn btn-danger" data-bs-toggle="modal" data-bs-target="#confirmReinitModal">
+                Reinicializar Base de Dados Agora
+            </button>
+        </div>
+    </div>
+
+    <!-- Modal de Confirmação -->
+    <div class="modal fade" id="confirmReinitModal" tabindex="-1" aria-labelledby="confirmReinitModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="confirmReinitModalLabel">Confirmar Ação</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    Tem a certeza absoluta que quer apagar todos os dados e reinicializar a base de dados? Esta ação não pode ser desfeita.
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <form action="{{ url_for('reinit_db') }}" method="POST" class="d-inline">
+                        <button type="submit" class="btn btn-danger">Sim, tenho a certeza</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
 </div>
 {% endblock %}
