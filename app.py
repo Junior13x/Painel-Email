@@ -543,43 +543,59 @@ def mp_webhook():
 @login_required
 @feature_required('mass-send')
 def mass_send_page():
-    conn, user_id = g.db_conn, session['user_id']
-    user_settings = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+    conn = g.db_conn
+    user_id = session['user_id']
+    
     if request.method == 'POST':
-        if session.get('role') != 'admin' and not all(user_settings.get(k) for k in ['smtp_host', 'smtp_user', 'smtp_password']):
-            flash("Configurações de SMTP incompletas.", "danger")
-            return redirect(url_for('settings_page'))
         try:
-            all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-            bulk_action, recipients = request.form.get('bulk_action'), []
-            if bulk_action and bulk_action != 'manual':
-                if bulk_action == 'all': recipients = all_contacts
-                else: recipients = [c for c in all_contacts if c.get('status_badge_class') == bulk_action]
-            else:
-                selected_ids = request.form.getlist('selected_contacts')
-                recipients = [c for c in all_contacts if str(c.get('id')) in selected_ids]
-            if not recipients:
-                flash("Nenhum destinatário selecionado.", "warning")
-                return redirect(url_for('mass_send_page'))
-            
-            subject, body = request.form.get('subject'), request.form.get('body')
-            with conn.begin():
+            with conn.begin(): # Transação para toda a operação de POST
+                user_settings = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+                
+                if session.get('role') != 'admin' and not all(user_settings.get(k) for k in ['smtp_host', 'smtp_user', 'smtp_password']):
+                    flash("Configurações de SMTP incompletas.", "danger")
+                    return redirect(url_for('settings_page'))
+
+                all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+                bulk_action, recipients = request.form.get('bulk_action'), []
+                
+                if bulk_action and bulk_action != 'manual':
+                    if bulk_action == 'all': recipients = all_contacts
+                    else: recipients = [c for c in all_contacts if c.get('status_badge_class') == bulk_action]
+                else:
+                    selected_ids = request.form.getlist('selected_contacts')
+                    recipients = [c for c in all_contacts if str(c.get('id')) in selected_ids]
+
+                if not recipients:
+                    flash("Nenhum destinatário selecionado.", "warning")
+                    return redirect(url_for('mass_send_page'))
+                
+                subject, body = request.form.get('subject'), request.form.get('body')
+                
                 conn.execute(
                     text("INSERT INTO mass_send_jobs (user_id, subject, body, recipients_json, recipients_count) VALUES (:uid, :sub, :body, :rec_json, :rec_count)"),
                     {'uid': user_id, 'sub': subject, 'body': body, 'rec_json': json.dumps(recipients), 'rec_count': len(recipients)}
                 )
+            
+            # Flash e redirect ocorrem somente se a transação for bem-sucedida
             flash(f"Campanha para {len(recipients)} destinatários foi agendada! O envio será processado em segundo plano.", "success")
             return redirect(url_for('history_page'))
+
         except Exception as e:
+            # A transação falha e faz rollback automaticamente
             flash(f"Erro ao agendar envio: {e}", "danger")
-    contacts, error_message, templates = [], None, []
+            return redirect(url_for('mass_send_page'))
+
+    # Lógica para o método GET
     try:
-        if all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id']):
-            contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
-        templates = conn.execute(text("SELECT * FROM email_templates WHERE user_id = :uid ORDER BY name"), {'uid': user_id}).mappings().fetchall()
+        with conn.begin(): # Transação para a operação de GET
+            user_settings = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': user_id}).mappings().fetchone()
+            contacts, error_message, templates = [], None, []
+            if all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'baserow_table_id']):
+                contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
+            templates = conn.execute(text("SELECT * FROM email_templates WHERE user_id = :uid ORDER BY name"), {'uid': user_id}).mappings().fetchall()
+        return render_template('envio_em_massa.html', contacts=contacts, error=error_message, templates=templates)
     except Exception as e:
-        error_message = f"Não foi possível carregar dados: {e}"
-    return render_template('envio_em_massa.html', contacts=contacts, error=error_message, templates=templates)
+        return render_template('envio_em_massa.html', contacts=[], error=f"Não foi possível carregar dados: {e}", templates=[])
 
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
@@ -705,6 +721,7 @@ def schedule_page():
                 conn.execute(text("""INSERT INTO scheduled_emails (user_id, schedule_type, status_target, manual_recipients, subject, body, send_at) VALUES (:uid, :st, :stat, :mr, :sub, :body, :sa)"""), {'uid': user_id, 'st': schedule_type, 'stat': status_target, 'mr': manual_recipients, 'sub': subject, 'body': body, 'sa': send_at_dt})
             flash("E-mail agendado com sucesso!", "success")
         return redirect(url_for('schedule_page'))
+    
     pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE ORDER BY send_at ASC"), {'uid': user_id}).mappings().fetchall()
     return render_template('agendamento.html', pending_emails=pending_emails, schedule_data=None)
 
@@ -757,4 +774,4 @@ def view_logs():
     logs = g.db_conn.execute(text("SELECT * FROM app_logs ORDER BY timestamp DESC LIMIT 200")).mappings().fetchall()
     return render_template('logs.html', logs=logs)
 
-# O Gunicorn assume o controle a partir daqui
+# O Gunicorn assume o controle a partir daqui.
