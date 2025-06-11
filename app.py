@@ -180,15 +180,38 @@ def process_user_tasks(conn, user):
         log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de boas-vindas.")
         subject, body = welcome_config.get('subject'), welcome_config.get('body')
         if subject and body:
-            new_contacts = [c for c in all_contacts if c.get("Data") and parse_date_string(c["Data"]) and (datetime.now() - parse_date_string(c["Data"])).days < 1]
-            if new_contacts: log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(new_contacts)} novos contactos para boas-vindas.")
-            for contact in new_contacts:
-                already_sent = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
-                if not already_sent:
-                    log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando e-mail de boas-vindas para {contact.get('Email')}.")
-                    send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
+            log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Iniciando verificação de contactos para boas-vindas. Total: {len(all_contacts)}.")
+            new_contacts = []
+            now = datetime.now()
+            for contact in all_contacts:
+                contact_email = contact.get('Email', 'sem-email')
+                raw_date_str = contact.get("Data")
+                if not raw_date_str:
+                    log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Contacto {contact_email} pulado (sem campo 'Data').")
+                    continue
+                
+                parsed_date = parse_date_string(raw_date_str)
+                if not parsed_date:
+                    log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Contacto {contact_email} pulado (falha ao analisar a data: '{raw_date_str}').")
+                    continue
+
+                days_diff = (now.date() - parsed_date.date()).days
+                log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Verificando {contact_email}. Data: {parsed_date.strftime('%Y-%m-%d')}. Dias de diferença: {days_diff}.")
+
+                if days_diff < 1:
+                    new_contacts.append(contact)
                 else:
-                    log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: E-mail de boas-vindas já enviado para {contact.get('Email')}. Pulando.")
+                    log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Contacto {contact_email} pulado (antigo, {days_diff} dias).")
+            
+            if new_contacts:
+                log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(new_contacts)} novos contactos para boas-vindas.")
+                for contact in new_contacts:
+                    already_sent = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
+                    if not already_sent:
+                        log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando e-mail de boas-vindas para {contact.get('Email')}.")
+                        send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
+                    else:
+                        log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: E-mail de boas-vindas já enviado para {contact.get('Email')}. Pulando.")
     
     # Automação de Expiração
     expiry_config = automations.get('expiry', {})
