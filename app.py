@@ -760,6 +760,51 @@ def schedule_page():
     pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE ORDER BY send_at ASC"), {'uid': user_id}).mappings().fetchall()
     return render_template('agendamento.html', pending_emails=pending_emails, schedule_data=None)
 
+@app.route('/agendamento/edit/<int:email_id>', methods=['GET', 'POST'])
+@login_required
+@feature_required('schedules')
+def edit_schedule(email_id):
+    conn = g.db_conn
+    user_id = session['user_id']
+    
+    if request.method == 'POST':
+        subject, body, send_at_str = request.form.get('subject'), request.form.get('body'), request.form.get('send_at')
+        schedule_type, status_target, manual_recipients = request.form.get('schedule_type'), None, None
+        if schedule_type == 'group': status_target = request.form.get('status_target')
+        elif schedule_type == 'manual':
+            emails = [email.strip() for email in re.split(r'[,\s]+', request.form.get('manual_emails', '')) if email.strip()]
+            if not emails:
+                flash("Insira ao menos um e-mail válido para agendamento manual.", "warning")
+                schedule_data = conn.execute(text("SELECT * FROM scheduled_emails WHERE id = :eid AND user_id = :uid"), {'eid': email_id, 'uid': user_id}).mappings().fetchone()
+                return render_template('agendamento.html', schedule_data=schedule_data, pending_emails=[])
+            manual_recipients = ','.join(emails)
+
+        if not all([subject, body, send_at_str, schedule_type]):
+            flash("Todos os campos são obrigatórios para agendar.", "warning")
+        else:
+            send_at_dt = datetime.strptime(send_at_str, '%Y-%m-%dT%H:%M')
+            with conn.begin():
+                conn.execute(
+                    text("""UPDATE scheduled_emails SET schedule_type = :st, status_target = :stat, manual_recipients = :mr, subject = :sub, body = :body, send_at = :sa WHERE id = :eid AND user_id = :uid"""),
+                    {'eid': email_id, 'uid': user_id, 'st': schedule_type, 'stat': status_target, 'mr': manual_recipients, 'sub': subject, 'body': body, 'sa': send_at_dt}
+                )
+            flash("Agendamento atualizado com sucesso!", "success")
+            return redirect(url_for('schedule_page'))
+
+    # Para GET request
+    schedule_data = conn.execute(text("SELECT * FROM scheduled_emails WHERE id = :eid AND user_id = :uid"), {'eid': email_id, 'uid': user_id}).mappings().fetchone()
+    if not schedule_data:
+        flash("Agendamento não encontrado ou sem permissão.", "danger")
+        return redirect(url_for('schedule_page'))
+    
+    pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE ORDER BY send_at ASC"), {'uid': user_id}).mappings().fetchall()
+    
+    editable_schedule = dict(schedule_data)
+    if editable_schedule.get('send_at'):
+        editable_schedule['send_at_formatted'] = editable_schedule['send_at'].strftime('%Y-%m-%dT%H:%M')
+
+    return render_template('agendamento.html', schedule_data=editable_schedule, pending_emails=pending_emails)
+
 @app.route('/agendamento/delete/<int:email_id>', methods=['POST'])
 @login_required
 @feature_required('schedules')
