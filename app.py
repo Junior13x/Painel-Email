@@ -376,18 +376,47 @@ def feature_required(feature_slug):
 def inject_user_info():
     if 'user_id' not in session: return {}
     conn = g.db_conn
-    user = conn.execute(text("SELECT * FROM users WHERE id = :id"), {'id': session['user_id']}).mappings().fetchone()
-    if not user:
+    user_data = conn.execute(text("SELECT u.*, p.name as plan_name, p.daily_send_limit FROM users u LEFT JOIN plans p ON u.plan_id = p.id WHERE u.id = :id"), {'id': session['user_id']}).mappings().fetchone()
+    if not user_data:
         session.clear()
         return {}
     
+    # Feature calculation
     enabled_features = set()
-    if user['role'] == 'admin':
+    if user_data['role'] == 'admin':
         enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
-    elif user.get('plan_id') and (not user.get('plan_expiration_date') or user['plan_expiration_date'] >= datetime.now().date()):
-        enabled_features = {row['slug'] for row in conn.execute(text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"), {'plan_id': user['plan_id']}).mappings().fetchall()}
+    elif user_data.get('plan_id') and (not user_data.get('plan_expiration_date') or user_data['plan_expiration_date'] >= datetime.now().date()):
+        enabled_features = {row['slug'] for row in conn.execute(text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"), {'plan_id': user_data['plan_id']}).mappings().fetchall()}
     session['user_features'] = list(enabled_features)
-    return dict(is_admin=(user['role'] == 'admin'), user_features=list(enabled_features))
+
+    # Plan status and send limit calculation
+    plan_status = {'plan_name': 'Grátis', 'badge_class': 'secondary', 'days_left': None}
+    daily_limit = 25
+    if user_data['role'] == 'admin':
+        plan_status = {'plan_name': 'Admin', 'badge_class': 'danger', 'days_left': 9999}
+        daily_limit = -1
+    elif user_data.get('plan_id'):
+        plan_name = user_data['plan_name']
+        daily_limit = user_data['daily_send_limit'] if user_data['daily_send_limit'] is not None else -1
+        if user_data.get('plan_expiration_date'):
+            expiration_date = user_data['plan_expiration_date']
+            days_left = (expiration_date - datetime.now().date()).days
+            plan_status = {'plan_name': plan_name, 'badge_class': 'success' if days_left >= 0 else 'warning', 'days_left': days_left}
+            if days_left < 0: plan_status['plan_name'] += " (Expirado)"
+        else:
+             plan_status = {'plan_name': plan_name, 'badge_class': 'success', 'days_left': 9999}
+
+    sends_today = user_data['sends_today'] if user_data['last_send_date'] == datetime.now().date() else 0
+    sends_remaining = daily_limit - sends_today if daily_limit != -1 else -1
+
+    return dict(
+        is_admin=(user_data['role'] == 'admin'),
+        user_features=list(enabled_features),
+        user_plan_status=plan_status,
+        sends_today=sends_today,
+        sends_remaining=sends_remaining,
+        daily_limit=daily_limit
+    )
 
 def parse_date_string(date_string):
     if not date_string: return None
