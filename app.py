@@ -125,8 +125,6 @@ def process_user_tasks(conn, user):
 
     # --- TAREFA 1: Processar Envios em Massa (mass_send_jobs) ---
     job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchone()
-    if not job:
-        log_to_db_worker('DEBUG', f"User {user_id}: Nenhum job de envio em massa pendente encontrado.")
     if job:
         job_id = job['id']
         log_to_db_worker('WORKER', f"User {user_id}: Job {job_id} encontrado. Processando...")
@@ -144,7 +142,7 @@ def process_user_tasks(conn, user):
             error_msg = str(e)
             log_to_db_worker('ERROR', f"ERRO CRÍTICO no Job ID {job_id}: {error_msg}")
             conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
-            raise # Propaga o erro para dar rollback na transação principal
+            raise 
 
     # --- TAREFA 2 & 3: Agendamentos e Automações ---
     if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
