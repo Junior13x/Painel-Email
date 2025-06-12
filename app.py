@@ -149,7 +149,6 @@ def process_user_tasks(conn, user):
     user_id = user_settings['id']
     log_to_db_worker('INFO', f"Processando tarefas para o usuário: {user_settings['email']} (ID: {user_id}).")
 
-    # --- TAREFA 1: Processar Envios em Massa (mass_send_jobs) ---
     job = conn.execute(text("SELECT * FROM mass_send_jobs WHERE user_id = :uid AND status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED"), {'uid': user_id}).mappings().fetchone()
     if job:
         job_id = job['id']
@@ -170,14 +169,12 @@ def process_user_tasks(conn, user):
             conn.execute(text("UPDATE mass_send_jobs SET status = 'failed', error_message = :msg WHERE id = :job_id"), {'msg': error_msg, 'job_id': job_id})
             raise 
 
-    # --- TAREFA 2: Agendamentos e Automações ---
     if not all(user_settings.get(k) for k in ['baserow_host', 'baserow_api_key', 'smtp_user']):
         log_to_db_worker('DEBUG', f"User {user_id}: Configurações incompletas para Agendamentos/Automações. Pulando.")
         return
         
     all_contacts = process_contacts_status(get_all_contacts_from_baserow(user_settings))
     
-    # Lógica de Agendamentos
     pending_emails = conn.execute(text("SELECT * FROM scheduled_emails WHERE user_id = :uid AND is_sent = FALSE AND send_at <= :now FOR UPDATE SKIP LOCKED"), {'uid': user_id, 'now': datetime.now(BR_TZ)}).mappings().fetchall()
     if pending_emails:
         log_to_db_worker('INFO', f"User {user_id}: {len(pending_emails)} agendamento(s) encontrado(s).")
@@ -194,13 +191,11 @@ def process_user_tasks(conn, user):
                 send_emails_in_batches_worker(conn, user_settings, user_id, recipients, email_job['subject'], email_job['body'])
             conn.execute(text("UPDATE scheduled_emails SET is_sent = TRUE WHERE id = :eid"), {'eid': email_job['id']})
 
-    # Lógica de Automações
     automations = json.loads(user_settings.get('automations_config') or '{}')
     if not automations:
         log_to_db_worker('DEBUG', f"User {user_id}: Nenhuma configuração de automação encontrada.")
         return
 
-    # Automação de Boas-Vindas
     welcome_config = automations.get('welcome', {})
     if welcome_config.get('enabled'):
         log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de boas-vindas.")
@@ -225,34 +220,11 @@ def process_user_tasks(conn, user):
                 log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Verificando {contact_email}. Data: {parsed_date.strftime('%Y-%m-%d')}. Dias de diferença: {days_diff}.")
 
                 if days_diff < 1:
-                    new_contacts.append(contact)
-            
-            if new_contacts:
-                log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(new_contacts)} novos contactos para boas-vindas.")
-                for contact in new_contacts:
-                    already_sent = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
-                    if not already_sent:
-                        log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando e-mail de boas-vindas para {contact.get('Email')}.")
-                        send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
-                    else:
-                        log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: E-mail de boas-vindas já enviado para {contact.get('Email')}. Pulando.")
-    
-    # Automação de Expiração
+                    pass
+
     expiry_config = automations.get('expiry', {})
     if expiry_config.get('enabled'):
-        log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de expiração.")
-        for days_left in [7, 3, 1]:
-            subject, body = expiry_config.get(f'subject_{days_left}_days'), expiry_config.get(f'body_{days_left}_days')
-            if subject and body:
-                expiring_contacts = [c for c in all_contacts if c.get('remaining_days_int') == days_left]
-                if expiring_contacts: log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(expiring_contacts)} contactos expirando em {days_left} dias.")
-                for contact in expiring_contacts:
-                    already_sent_today = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub AND DATE(sent_at) = CURRENT_DATE"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
-                    if not already_sent_today:
-                        log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando aviso de expiração de {days_left} dias para {contact.get('Email')}.")
-                        send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
-                    else:
-                        log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Aviso de expiração de {days_left} dias já enviado hoje para {contact.get('Email')}. Pulando.")
+        pass
 
 def background_worker_loop():
     """O loop principal do robô."""
@@ -369,18 +341,6 @@ def init_db_logic():
 @app.cli.command('init-db')
 def init_db_command(): init_db_logic()
 
-@app.route('/run-db-initialization-once/SUA_CHAVE_SECRETA_AQUI')
-def secret_init_db():
-    try:
-        init_db_logic()
-        message = "Banco de dados reinicializado com sucesso! POR FAVOR, REMOVA OU ALTERE ESTA ROTA AGORA POR MOTIVOS DE SEGURANÇA."
-        flash(message, "success")
-        return f"<h1>Sucesso</h1><p>{message}</p><a href='/'>Voltar para o Início</a>"
-    except Exception as e:
-        message = f"Erro ao reinicializar o banco de dados: {e}"
-        flash(message, "danger")
-        return f"<h1>Erro</h1><p>{message}</p>", 500
-
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -465,8 +425,10 @@ def inject_user_info():
     if user_data['role'] == 'admin':
         enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
     else:
-        # CORREÇÃO: Concede acesso visual a todas as funcionalidades para todos os utilizadores
-        enabled_features = {row['slug'] for row in conn.execute(text("SELECT slug FROM features")).mappings().fetchall()}
+        enabled_features.add('mass-send')
+        if user_data.get('plan_id') and (not user_data.get('plan_expiration_date') or user_data['plan_expiration_date'] >= datetime.now(BR_TZ).date()):
+            plan_features = {row['slug'] for row in conn.execute(text("SELECT f.slug FROM features f JOIN plan_features pf ON f.id = pf.feature_id WHERE pf.plan_id = :plan_id"), {'plan_id': user_data['plan_id']}).mappings().fetchall()}
+            enabled_features.update(plan_features)
 
     session['user_features'] = list(enabled_features)
 
@@ -553,10 +515,6 @@ def get_all_contacts_from_baserow(settings):
 # ===============================================================
 # == 5. ROTAS DA APLICAÇÃO ==
 # ===============================================================
-@app.route('/ping')
-def ping():
-    return "pong", 200
-
 @app.route('/')
 def home(): return redirect(url_for('login_page'))
 
@@ -1035,7 +993,7 @@ def delete_template(template_id):
     else:
         flash("Modelo não encontrado ou sem permissão para excluir.", "danger")
     return redirect(url_for('templates_page'))
-    
+
 @app.route('/agendamento', methods=['GET', 'POST'])
 @login_required
 @feature_required('schedules')
