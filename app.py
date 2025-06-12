@@ -729,6 +729,30 @@ def plans_page():
         plans_data.append({'plan': plan, 'enabled_feature_ids': feature_ids})
     return render_template('planos.html', plans_data=plans_data, master_features=master_features)
 
+@app.route('/verificar-status-plano')
+@login_required
+def check_plan_status():
+    try:
+        conn = g.db_conn
+        user = conn.execute(text("SELECT plan_id, plan_expiration_date FROM users WHERE id = :uid"), {'uid': session['user_id']}).mappings().fetchone()
+        
+        if not user:
+            return jsonify({'status': 'erro', 'message': 'Utilizador não encontrado'}), 404
+
+        is_approved = (
+            user['plan_id'] is not None and
+            user['plan_expiration_date'] is not None and
+            user['plan_expiration_date'] >= datetime.now(BR_TZ).date()
+        )
+        
+        if is_approved:
+            return jsonify({'status': 'aprovado'})
+        else:
+            return jsonify({'status': 'pendente'})
+    except Exception as e:
+        print(f"Erro em check_plan_status: {e}")
+        return jsonify({'status': 'erro', 'message': str(e)}), 500
+    
 @app.route('/criar-pagamento', methods=['POST'])
 @login_required
 def create_payment():
