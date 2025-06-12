@@ -220,11 +220,33 @@ def process_user_tasks(conn, user):
                 log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Verificando {contact_email}. Data: {parsed_date.strftime('%Y-%m-%d')}. Dias de diferença: {days_diff}.")
 
                 if days_diff < 1:
-                    pass
-
+                    new_contacts.append(contact)
+            
+            if new_contacts:
+                log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(new_contacts)} novos contactos para boas-vindas.")
+                for contact in new_contacts:
+                    already_sent = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
+                    if not already_sent:
+                        log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando e-mail de boas-vindas para {contact.get('Email')}.")
+                        send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
+                    else:
+                        log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: E-mail de boas-vindas já enviado para {contact.get('Email')}. Pulando.")
+    
     expiry_config = automations.get('expiry', {})
     if expiry_config.get('enabled'):
-        pass
+        log_to_db_worker('AUTOMATION', f"User {user_id}: Verificando automação de expiração.")
+        for days_left in [7, 3, 1]:
+            subject, body = expiry_config.get(f'subject_{days_left}_days'), expiry_config.get(f'body_{days_left}_days')
+            if subject and body:
+                expiring_contacts = [c for c in all_contacts if c.get('remaining_days_int') == days_left]
+                if expiring_contacts: log_to_db_worker('AUTOMATION', f"User {user_id}: Encontrados {len(expiring_contacts)} contactos expirando em {days_left} dias.")
+                for contact in expiring_contacts:
+                    already_sent_today = conn.execute(text("SELECT id FROM envio_historico WHERE user_id = :uid AND recipient_email = :re AND subject = :sub AND DATE(sent_at) = CURRENT_DATE"), {'uid': user_id, 're': contact.get('Email'), 'sub': subject}).fetchone()
+                    if not already_sent_today:
+                        log_to_db_worker('AUTOMATION', f"User {user_id}: Enviando aviso de expiração de {days_left} dias para {contact.get('Email')}.")
+                        send_emails_in_batches_worker(conn, user_settings, user_id, [contact], subject, body)
+                    else:
+                        log_to_db_worker('AUTOMATION_DEBUG', f"User {user_id}: Aviso de expiração de {days_left} dias já enviado hoje para {contact.get('Email')}. Pulando.")
 
 def background_worker_loop():
     """O loop principal do robô."""
