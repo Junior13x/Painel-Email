@@ -537,6 +537,10 @@ def get_all_contacts_from_baserow(settings):
 # ===============================================================
 # == 5. ROTAS DA APLICAÇÃO ==
 # ===============================================================
+@app.route('/ping')
+def ping():
+    return "pong", 200
+
 @app.route('/')
 def home(): return redirect(url_for('login_page'))
 
